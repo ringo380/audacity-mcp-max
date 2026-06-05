@@ -137,10 +137,20 @@ class AudacityClient:
         if self._to_pipe is None or self._from_pipe is None:
             self._open_pipes()
 
+        # Audacity's mod-script-pipe relay tears down and reopens both FIFO ends
+        # after every command cycle, so a cached fd from a previous command points
+        # at a peer that is already gone -- the read returns EOF (empty response) or
+        # the write hits a closed reader (EPIPE), intermittently (~50%). Open fresh
+        # per command: close the pipes after each send so the None check above
+        # reopens them next time. _close_pipes() is idempotent, so the error paths
+        # (which already close) are unaffected.
         if sys.platform == "win32":
             return self._win32_send_raw(command_str)
         else:
-            return self._posix_send_raw(command_str)
+            try:
+                return self._posix_send_raw(command_str)
+            finally:
+                self._close_pipes()
 
     def _win32_send_raw(self, command_str: str) -> str:
         data = command_str.encode("utf-8")
