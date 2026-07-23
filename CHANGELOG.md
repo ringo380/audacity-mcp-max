@@ -1,6 +1,19 @@
 # Changelog
 
-All notable changes to AudacityMCP will be documented in this file.
+All notable changes to audacity-mcp-max will be documented in this file.
+
+## [0.2.0] - 2026-07-23
+
+### Renamed
+
+- The project is now **audacity-mcp-max**, distributed from `ringo380/audacity-mcp-max`. The distribution name, console script, and MCP server identity all changed; the Python import paths (`audacity_mcp`, `audacity_mcp_shared`) are unchanged.
+- Install is from git rather than PyPI. The PyPI `audacity-mcp` package is upstream's build and at 0.1.8 it carried a pre-fix pipe layer that reports every response one call late.
+- Version moved off 0.1.8 so it no longer collides with that PyPI release.
+
+### Pipe layer
+
+- `_posix_open_pipes` opens FROM before TO with `O_NONBLOCK` and keeps raw integer fds. Audacity's relay opens its write end first and blocks for a reader, so the reverse order races it and yields immediate empty reads; a buffered reader's readahead drops the reply outright.
+- `_send_raw` retries up to six times, opening fresh and tearing our ends down between attempts. The relay closes both FIFO ends after every command cycle, so a single attempt succeeds only about half the time by design.
 
 ## [0.1.7] - 2026-04-10
 

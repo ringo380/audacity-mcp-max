@@ -1,12 +1,12 @@
 # Installation Guide
 
-Get AudacityMCP running in 3 steps: **enable the Audacity plugin → install AudacityMCP → connect your AI client**.
+Get audacity-mcp-max running in 3 steps: **enable the Audacity plugin → install audacity-mcp-max → connect your AI client**.
 
 ---
 
 ## Step 1: Enable mod-script-pipe in Audacity
 
-AudacityMCP talks to Audacity through a built-in scripting plugin. You just need to flip it on.
+audacity-mcp-max talks to Audacity through a built-in scripting plugin. You just need to flip it on.
 
 1. Open **Audacity**
 2. Go to **Edit → Preferences** (Windows/Linux) or **Audacity → Preferences** (macOS)
@@ -14,29 +14,29 @@ AudacityMCP talks to Audacity through a built-in scripting plugin. You just need
 4. Set `mod-script-pipe` to **Enabled**
 5. Click **OK** and **restart Audacity**
 
-That's it. The plugin creates named pipes that AudacityMCP connects to automatically.
+That's it. The plugin creates named pipes that audacity-mcp-max connects to automatically.
 
 > **Keep Audacity open** — the connection only works while Audacity is running.
 
-## Step 2: Install AudacityMCP
+## Step 2: Install audacity-mcp-max
 
 ### Option A: One-click installer (easiest)
 
 - **Windows:** Download [`install.bat`](../install.bat) from the repo → double-click it
 - **macOS / Linux:** Run this in your terminal:
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/xDarkzx/Audacity-MCP/main/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/ringo380/audacity-mcp-max/main/install.sh | bash
   ```
 
 The installer handles Steps 2 and 3 for you — skip to [Verify It Works](#verify-it-works).
 
-### Option B: pip install from PyPI (recommended)
+### Option B: pip install from GitHub (recommended)
 
 ```bash
-pip install audacity-mcp
+pip install git+https://github.com/ringo380/audacity-mcp-max.git
 ```
 
-That's it. This gives you the `audacity-mcp` command. No git clone needed.
+That's it. This gives you the `audacity-mcp-max` command. No git clone needed.
 
 ### Option C: From source (for developers)
 
@@ -44,12 +44,12 @@ That's it. This gives you the `audacity-mcp` command. No git clone needed.
 <summary>Click to expand</summary>
 
 ```bash
-git clone https://github.com/xDarkzx/Audacity-MCP.git
-cd AudacityMCP
+git clone https://github.com/ringo380/audacity-mcp-max.git
+cd audacity-mcp-max
 pip install -e .
 ```
 
-When running from source, use `python -m audacity_mcp.main` anywhere this guide says `audacity-mcp`.
+When running from source, use `python -m audacity_mcp.main` anywhere this guide says `audacity-mcp-max`.
 
 To include dev/test dependencies:
 
@@ -67,13 +67,13 @@ Pick your client below. Each section shows the **complete config file** — copy
 
 **Option A: Installed with pip** (recommended — simplest config)
 
-If you installed via `pip install audacity-mcp` or the one-click installer, your config is just:
+If you installed via `pip install git+https://github.com/ringo380/audacity-mcp-max.git` or the one-click installer, your config is just:
 
 ```json
 {
   "mcpServers": {
     "audacity": {
-      "command": "audacity-mcp"
+      "command": "audacity-mcp-max"
     }
   }
 }
@@ -89,7 +89,7 @@ If you skipped `pip install` and want to run directly from the cloned repo, you 
     "audacity": {
       "command": "C:\\Users\\YourName\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
       "args": ["-m", "audacity_mcp.main"],
-      "cwd": "C:\\Users\\YourName\\Projects\\AudacityMCP"
+      "cwd": "C:\\Users\\YourName\\Projects\\audacity-mcp-max"
     }
   }
 }
@@ -97,7 +97,7 @@ If you skipped `pip install` and want to run directly from the cloned repo, you 
 
 > **How to find your Python path:** Open a terminal and run `where python` (Windows) or `which python` (macOS/Linux). Copy that path into the `command` field.
 >
-> **How to set cwd:** This is the folder where you cloned AudacityMCP. It must contain the `audacity_mcp/` folder inside it.
+> **How to set cwd:** This is the folder where you cloned audacity-mcp-max. It must contain the `audacity_mcp/` folder inside it.
 
 **Already have other stuff in your config?** That's fine — just add the `"audacity"` key inside the existing `mcpServers`, or add `mcpServers` alongside your other keys:
 
@@ -105,7 +105,7 @@ If you skipped `pip install` and want to run directly from the cloned repo, you 
 {
   "mcpServers": {
     "audacity": {
-      "command": "audacity-mcp"
+      "command": "audacity-mcp-max"
     },
     "some-other-server": {
       "command": "some-other-command"
@@ -127,7 +127,7 @@ Save the config and **restart Claude Desktop**.
 ### Claude Code (CLI)
 
 ```bash
-claude --mcp-server audacity=audacity-mcp
+claude --mcp-server audacity=audacity-mcp-max
 ```
 
 Or add to your project's `.mcp.json` for persistent config:
@@ -136,7 +136,7 @@ Or add to your project's `.mcp.json` for persistent config:
 {
   "mcpServers": {
     "audacity": {
-      "command": "audacity-mcp",
+      "command": "audacity-mcp-max",
       "type": "stdio"
     }
   }
@@ -146,7 +146,7 @@ Or add to your project's `.mcp.json` for persistent config:
 ### Cursor
 
 1. Open **Settings** → **Tools & MCP** → **New MCP Server**
-2. Set type to `command`, enter `audacity-mcp`
+2. Set type to `command`, enter `audacity-mcp-max`
 3. Done
 
 Or create `.cursor/mcp.json` in your project root (or `~/.cursor/mcp.json` for global):
@@ -155,7 +155,7 @@ Or create `.cursor/mcp.json` in your project root (or `~/.cursor/mcp.json` for g
 {
   "mcpServers": {
     "audacity": {
-      "command": "audacity-mcp"
+      "command": "audacity-mcp-max"
     }
   }
 }
@@ -170,7 +170,7 @@ Or create `.cursor/mcp.json` in your project root (or `~/.cursor/mcp.json` for g
     "audacity": {
       "command": "C:\\Users\\YourName\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
       "args": ["-m", "audacity_mcp.main"],
-      "cwd": "C:\\Users\\YourName\\Projects\\AudacityMCP"
+      "cwd": "C:\\Users\\YourName\\Projects\\audacity-mcp-max"
     }
   }
 }
@@ -189,7 +189,7 @@ Or create `.cursor/mcp.json` in your project root (or `~/.cursor/mcp.json` for g
 {
   "mcpServers": {
     "audacity": {
-      "command": "audacity-mcp"
+      "command": "audacity-mcp-max"
     }
   }
 }
@@ -197,25 +197,25 @@ Or create `.cursor/mcp.json` in your project root (or `~/.cursor/mcp.json` for g
 
 ### Other MCP Clients
 
-AudacityMCP uses **stdio transport**. Point any MCP-compatible client at the `audacity-mcp` command.
+audacity-mcp-max uses **stdio transport**. Point any MCP-compatible client at the `audacity-mcp-max` command.
 
 ---
 
 ## Why Do I Need `command` and `cwd`?
 
-The `command` field tells your AI client **what program to run** — it can't be removed. When you do `pip install -e .`, it creates the `audacity-mcp` shortcut command so you don't need a full Python path.
+The `command` field tells your AI client **what program to run** — it can't be removed. When you do `pip install -e .`, it creates the `audacity-mcp-max` shortcut command so you don't need a full Python path.
 
-If you didn't pip install, you need the full Python path in `command` because the AI client needs to know where Python is on your system. The `cwd` tells it where the AudacityMCP code lives.
+If you didn't pip install, you need the full Python path in `command` because the AI client needs to know where Python is on your system. The `cwd` tells it where the audacity-mcp-max code lives.
 
-**TL;DR:** Run `pip install audacity-mcp` and your config is just `"command": "audacity-mcp"` — no paths needed.
+**TL;DR:** Run `pip install git+https://github.com/ringo380/audacity-mcp-max.git` and your config is just `"command": "audacity-mcp-max"` — no paths needed.
 
 ---
 
 ## Important: Audacity Must Be Open
 
-> **AudacityMCP does NOT open Audacity for you.** You must have Audacity running before you start chatting. The AI client cannot launch or control Audacity unless it's already open with mod-script-pipe enabled.
+> **audacity-mcp-max does NOT open Audacity for you.** You must have Audacity running before you start chatting. The AI client cannot launch or control Audacity unless it's already open with mod-script-pipe enabled.
 
-**Every time you want to use AudacityMCP:**
+**Every time you want to use audacity-mcp-max:**
 1. Open **Audacity** first
 2. Load or record your audio
 3. Then go to your AI client and start chatting
@@ -240,7 +240,7 @@ If you see track/project info come back, you're all set.
 
 ## Transcription Setup (Optional)
 
-AudacityMCP includes local transcription via [faster-whisper](https://github.com/SYSTRAN/faster-whisper). It needs a one-time setup before first use.
+audacity-mcp-max includes local transcription via [faster-whisper](https://github.com/SYSTRAN/faster-whisper). It needs a one-time setup before first use.
 
 **Run these commands to install and pre-download the model:**
 
@@ -270,7 +270,7 @@ GPU makes transcription **10-20x faster**. A 3-minute file takes ~10 seconds on 
 pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
 ```
 
-That's it — AudacityMCP automatically detects GPU and uses it. No CUDA toolkit install needed. If you don't have an NVIDIA GPU, skip this — CPU works fine, just slower on long files.
+That's it — audacity-mcp-max automatically detects GPU and uses it. No CUDA toolkit install needed. If you don't have an NVIDIA GPU, skip this — CPU works fine, just slower on long files.
 
 ---
 
@@ -281,7 +281,7 @@ That's it — AudacityMCP automatically detects GPU and uses it. No CUDA toolkit
 | "Load this module?" popup on every launch | mod-script-pipe is set to "Ask" instead of "Enabled" | Edit → Preferences → Modules → change mod-script-pipe to **Enabled** (not Ask) → OK → restart |
 | "Pipe not found" | Audacity isn't running or mod-script-pipe isn't enabled | Open Audacity, enable the module (Step 1), restart |
 | "Pipe timeout" | Audacity is busy with a long operation | Wait for it to finish — some effects take up to 2 minutes |
-| Connection works once then fails | Pipe disconnected (Audacity crash/restart) | Just try again — AudacityMCP auto-reconnects |
+| Connection works once then fails | Pipe disconnected (Audacity crash/restart) | Just try again — audacity-mcp-max auto-reconnects |
 | "Access denied" (Windows) | Running Audacity and client as different users | Run both as the same user (don't mix admin/non-admin) |
 | Pipes missing in /tmp (macOS/Linux) | Audacity didn't create them | Check Audacity is running, check console for errors |
 | "No module named faster_whisper" | Not installed | `pip install faster-whisper` |

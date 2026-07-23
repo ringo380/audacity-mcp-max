@@ -3,7 +3,7 @@ set -euo pipefail
 
 echo ""
 echo " ============================================"
-echo "  AudacityMCP - One-Click Installer"
+echo "  audacity-mcp-max - One-Click Installer"
 echo "  AI-powered audio editing in Audacity"
 echo " ============================================"
 echo ""
@@ -59,7 +59,7 @@ else
         fi
     else
         echo ""
-        echo " AudacityMCP requires Python 3.10+ to run."
+        echo " audacity-mcp-max requires Python 3.10+ to run."
         echo " Install it and come back — we'll be here!"
         echo ""
         echo "   macOS:  brew install python3"
@@ -88,15 +88,15 @@ fi
 if [ -n "${VIRTUAL_ENV:-}" ]; then
     echo ""
     echo " WARNING: You are inside a virtual environment."
-    echo " audacity-mcp should be installed globally so Claude Desktop can find it."
+    echo " audacity-mcp-max should be installed globally so Claude Desktop can find it."
     echo " Deactivate your venv first: deactivate"
     echo ""
     exit 1
 fi
 
-# ── Install audacity-mcp from PyPI ────────────────────────
+# ── Install audacity-mcp-max from GitHub ───────────────────────
 echo ""
-echo "[2/5] Installing audacity-mcp from PyPI..."
+echo "[2/5] Installing audacity-mcp-max from GitHub..."
 
 # Check if pip is available
 if ! $PYTHON -m pip --version &> /dev/null; then
@@ -112,14 +112,14 @@ if ! $PYTHON -m pip --version &> /dev/null; then
 fi
 
 $PYTHON -m pip install --upgrade pip >/dev/null 2>&1
-if ! $PYTHON -m pip install audacity-mcp; then
+if ! $PYTHON -m pip install git+https://github.com/ringo380/audacity-mcp-max.git; then
     echo ""
     echo " ERROR: pip install failed."
-    echo " Try: $PYTHON -m pip install --user audacity-mcp"
+    echo " Try: $PYTHON -m pip install --user git+https://github.com/ringo380/audacity-mcp-max.git"
     echo ""
     exit 1
 fi
-echo "  audacity-mcp installed successfully!"
+echo "  audacity-mcp-max installed successfully!"
 
 # ── Enable mod-script-pipe in Audacity ────────────────────
 echo ""
@@ -145,7 +145,7 @@ elif grep -q "mod-script-pipe=1" "$AUD_CFG" 2>/dev/null; then
     echo "  mod-script-pipe is already enabled - skipping."
 else
     echo ""
-    echo "  AudacityMCP needs mod-script-pipe enabled to control Audacity."
+    echo "  audacity-mcp-max needs mod-script-pipe enabled to control Audacity."
     read -rp "  Would you like to modify the Audacity config to allow MCP access? (y/n): " ENABLE_PIPE
     if [[ ! "$ENABLE_PIPE" =~ ^[Yy]$ ]]; then
         echo ""
@@ -203,7 +203,7 @@ if [ -f "$CONFIG_FILE" ]; then
         echo "  Add this inside your \"mcpServers\" block:"
         echo ""
         echo '    "audacity": {'
-        echo '      "command": "audacity-mcp"'
+        echo '      "command": "audacity-mcp-max"'
         echo '    }'
         echo ""
     fi
@@ -212,7 +212,7 @@ else
 {
   "mcpServers": {
     "audacity": {
-      "command": "audacity-mcp"
+      "command": "audacity-mcp-max"
     }
   }
 }
@@ -238,6 +238,6 @@ echo "  3. Ask Claude: \"Get info about the current Audacity project\""
 echo ""
 echo " If you see project info, you're all set!"
 echo ""
-echo " Docs: https://github.com/xDarkzx/Audacity-MCP"
+echo " Docs: https://github.com/ringo380/audacity-mcp-max"
 echo " ============================================"
 echo ""

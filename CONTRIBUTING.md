@@ -1,12 +1,12 @@
-# Contributing to AudacityMCP
+# Contributing to audacity-mcp-max
 
 Thanks for your interest in contributing! Here's how to get started.
 
 ## Development Setup
 
 ```bash
-git clone https://github.com/xDarkzx/Audacity-MCP.git
-cd AudacityMCP
+git clone https://github.com/ringo380/audacity-mcp-max.git
+cd audacity-mcp-max
 pip install -e ".[dev]"
 ```
 
