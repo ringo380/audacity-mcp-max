@@ -160,10 +160,20 @@ class TestShutdown:
         import inspect
         assert not inspect.iscoroutinefunction(AudacityClient.close_sync)
 
-    def test_atexit_registers_a_sync_callable(self):
-        import inspect
+    def test_atexit_is_given_close_sync_itself(self):
+        # Asserting that close_sync is sync proves nothing about what main
+        # actually registered. Unregistering it is what pins the wiring: if
+        # main registered something else, the callback count does not move.
+        import atexit
         import audacity_mcp.main as main
-        assert not inspect.iscoroutinefunction(main.client.close_sync)
+
+        if not hasattr(atexit, "_ncallbacks"):
+            pytest.skip("interpreter does not expose atexit._ncallbacks")
+        before = atexit._ncallbacks()
+        atexit.unregister(main.client.close_sync)
+        after = atexit._ncallbacks()
+        atexit.register(main.client.close_sync)
+        assert after == before - 1, "atexit was not given client.close_sync"
 
     @posix_only
     def test_close_sync_closes_open_fds(self, client):

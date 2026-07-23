@@ -10,13 +10,24 @@ cd audacity-mcp-max
 pip install -e ".[dev]"
 ```
 
-## Running Tests
+## Verifying a Change
+
+```bash
+./scripts/verify.sh
+```
+
+That is the full gate: unit tests, tool registration (per module, so a module
+that stops contributing tools is visible), and a warning-free import of
+`audacity_mcp.main`. It exits non-zero listing whatever failed, and it does not
+need Audacity running — the tests are isolated from the real script pipes.
+
+To run just the tests:
 
 ```bash
 pytest tests/ -x -q
 ```
 
-All tests must pass before submitting a PR.
+The gate must pass before submitting a PR.
 
 ## Adding a New Tool
 
