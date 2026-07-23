@@ -1,15 +1,20 @@
 # Fork notes
 
-Personal fork of [xDarkzx/Audacity-MCP](https://github.com/xDarkzx/Audacity-MCP),
-kept for local customization. Findings below are from running the server against
-Audacity 3.7.8 on macOS (Apple Silicon), 2026-07-23.
+audacity-mcp-max started as a fork of
+[xDarkzx/Audacity-MCP](https://github.com/xDarkzx/Audacity-MCP) and is now
+maintained under its own name. Findings below are from running the server
+against Audacity 3.7.8 on macOS (Apple Silicon), 2026-07-23.
+
+The Python import paths are deliberately still `audacity_mcp` and
+`audacity_mcp_shared`, so upstream merges stay tractable. Only the
+distribution name, console script, and server identity carry the new name.
 
 ## Local setup
 
 Installed editable so edits in this tree are live:
 
 ```bash
-pip3 install --break-system-packages -e ~/git/Audacity-MCP
+pip3 install --break-system-packages -e ~/git/audacity-mcp-max
 ```
 
 Confirm which copy is actually loaded (this is worth checking whenever behavior
@@ -31,8 +36,9 @@ git merge upstream/main
 
 ## Do not install from PyPI
 
-PyPI `audacity-mcp` 0.1.8 and the GitHub tree both claim version 0.1.8 but the
-published wheel is older and carries the pre-fix pipe code:
+PyPI `audacity-mcp` is upstream's package, not this one. At 0.1.8 the published
+wheel was older than the GitHub tree carrying the same version number, and it
+ships the pre-fix pipe code:
 
 - caches pipe fds across commands
 - no retry around the relay's teardown/reopen cycle

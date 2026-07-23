@@ -1,6 +1,6 @@
 # Tool Reference
 
-Complete reference for all 131 tools in AudacityMCP.
+Complete reference for all 131 tools in audacity-mcp-max.
 
 ---
 

@@ -1,4 +1,4 @@
-<h1 align="center">AudacityMCP</h1>
+<h1 align="center">audacity-mcp-max</h1>
 
 <p align="center">
   <strong>AI-powered audio editing in Audacity through the Model Context Protocol</strong>
@@ -7,13 +7,13 @@
 <p align="center">
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="License" /></a>
-  <a href="https://github.com/xDarkzx/Audacity-MCP/releases"><img src="https://img.shields.io/github/v/release/xDarkzx/Audacity-MCP" alt="Release" /></a>
+  <a href="https://github.com/ringo380/audacity-mcp-max/releases"><img src="https://img.shields.io/github/v/release/ringo380/audacity-mcp-max" alt="Release" /></a>
   <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-compatible-purple.svg" alt="MCP Compatible" /></a>
 </p>
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> &bull;
-  <a href="#why-audacitymcp">Why AudacityMCP?</a> &bull;
+  <a href="#why-audacity-mcp-max">Why audacity-mcp-max?</a> &bull;
   <a href="#pipelines">Pipelines</a> &bull;
   <a href="docs/TOOLS.md">Tool Reference</a> &bull;
   <a href="#troubleshooting">Troubleshooting</a>
@@ -21,15 +21,15 @@
 
 ---
 
-AudacityMCP connects any MCP-compatible AI assistant to [Audacity](https://www.audacityteam.org/), giving it full control over audio editing through 131 tools spanning effects, cleanup, mastering, transcription, and more. Talk to your AI assistant and it edits your audio in real-time.
+audacity-mcp-max connects any MCP-compatible AI assistant to [Audacity](https://www.audacityteam.org/), giving it full control over audio editing through 131 tools spanning effects, cleanup, mastering, transcription, and more. Talk to your AI assistant and it edits your audio in real-time.
 
 **No cloud. No API keys for audio processing. Everything runs locally through Audacity's named pipe interface.**
 
-> **Compatibility:** AudacityMCP currently works with **Audacity 3.x** only. Audacity 4.x is not yet supported — we hope to add support in the future.
+> **Compatibility:** audacity-mcp-max currently works with **Audacity 3.x** only. Audacity 4.x is not yet supported — we hope to add support in the future.
 
 ### Works With
 
-AudacityMCP works with any AI client that supports the [Model Context Protocol](https://modelcontextprotocol.io):
+audacity-mcp-max works with any AI client that supports the [Model Context Protocol](https://modelcontextprotocol.io):
 
 - [Claude Desktop](https://claude.ai/download) — Anthropic's desktop app
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — CLI agent
@@ -40,13 +40,13 @@ AudacityMCP works with any AI client that supports the [Model Context Protocol](
 
 ## Quick Start
 
-### 1. Get AudacityMCP
+### 1. Get audacity-mcp-max
 
 **Option A:** Click the green **Code** button above → **Download ZIP** → extract to a folder
 
 **Option B:** Clone with git:
 ```bash
-git clone https://github.com/xDarkzx/Audacity-MCP.git
+git clone https://github.com/ringo380/audacity-mcp-max.git
 ```
 
 ### 2. Run the installer (sets up everything else automatically)
@@ -56,18 +56,18 @@ Open the folder and run:
 - **Windows:** Double-click `install.bat`
 - **macOS / Linux:** Open terminal in the folder and run `bash install.sh`
 
-> The installer does 3 things: installs `audacity-mcp` from PyPI, enables mod-script-pipe in Audacity, and **configures Claude Desktop** — no manual JSON editing needed.
+> The installer does 3 things: installs `audacity-mcp-max` from GitHub, enables mod-script-pipe in Audacity, and **configures Claude Desktop** — no manual JSON editing needed.
 
 <details>
 <summary>Other MCP clients (Cursor, Claude Code, etc.)</summary>
 
-If you're not using Claude Desktop, install manually with `pip install audacity-mcp` and add to your client's MCP config:
+If you're not using Claude Desktop, install manually with `pip install git+https://github.com/ringo380/audacity-mcp-max.git` and add to your client's MCP config:
 
 ```json
 {
   "mcpServers": {
     "audacity": {
-      "command": "audacity-mcp"
+      "command": "audacity-mcp-max"
     }
   }
 }
@@ -88,19 +88,19 @@ Open Audacity, load some audio, then talk to your AI:
 "Add reverb with a large room, then export as FLAC"
 ```
 
-> **Audacity must be open first.** AudacityMCP communicates through Audacity's named pipe — it can't launch Audacity for you.
+> **Audacity must be open first.** audacity-mcp-max communicates through Audacity's named pipe — it can't launch Audacity for you.
 
 > See the full [Installation Guide](docs/INSTALLATION.md) for detailed setup on all platforms and MCP clients.
 
 ---
 
-## Why AudacityMCP?
+## Why audacity-mcp-max?
 
-**Without AudacityMCP:** You manually navigate menus, tweak effect parameters by ear, apply effects one at a time, look up ACX specs, and repeat until it sounds right.
+**Without audacity-mcp-max:** You manually navigate menus, tweak effect parameters by ear, apply effects one at a time, look up ACX specs, and repeat until it sounds right.
 
-**With AudacityMCP:** You describe what you want in plain English and the AI handles the rest — picking the right effects, setting industry-standard parameters, and chaining operations together.
+**With audacity-mcp-max:** You describe what you want in plain English and the AI handles the rest — picking the right effects, setting industry-standard parameters, and chaining operations together.
 
-| | Manual Audacity | With AudacityMCP |
+| | Manual Audacity | With audacity-mcp-max |
 |---|---|---|
 | **Podcast cleanup** | 5+ steps across different menus, guessing compressor settings | *"Clean up this podcast"* — one sentence |
 | **Music mastering** | Research genre-appropriate EQ/compression, apply each manually | *"Master this for Spotify, it's hip-hop"* — genre-tuned presets |
@@ -109,7 +109,7 @@ Open Audacity, load some audio, then talk to your AI:
 | **Transcription** | Export audio, use external tool, import results back | *"Transcribe this and add labels"* — stays in Audacity |
 | **Learning curve** | Know which effects exist and what parameters to use | Just describe the result you want |
 
-AudacityMCP is especially useful for:
+audacity-mcp-max is especially useful for:
 - **Podcasters** who want consistent, professional sound without audio engineering knowledge
 - **Musicians** who need quick mastering with genre-appropriate settings
 - **Content creators** working with interviews, voiceovers, or field recordings
@@ -158,7 +158,7 @@ AI:   select region → reverb effect → export to FLAC
 
 ## Pipelines
 
-AudacityMCP includes 9 one-click pipelines for common audio tasks. Each pipeline is designed to be **safe for badly recorded audio** — it will never boost your audio dangerously. Pipelines clean up and improve your audio, then you can manually adjust loudness afterward if needed.
+audacity-mcp-max includes 9 one-click pipelines for common audio tasks. Each pipeline is designed to be **safe for badly recorded audio** — it will never boost your audio dangerously. Pipelines clean up and improve your audio, then you can manually adjust loudness afterward if needed.
 
 ### How Pipelines Work
 
@@ -335,7 +335,7 @@ The installer enables this automatically, but if it didn't work (e.g. Audacity w
 |---------|-----|
 | "Pipe not found" | Open Audacity first. Make sure `mod-script-pipe` is enabled (see above). Restart Audacity after enabling. |
 | "Pipe timeout" | Audacity is busy. Wait for it to finish — some effects take minutes on long files. |
-| Connection works once then fails | The pipe disconnected (Audacity crash or restart). Just try again — AudacityMCP auto-reconnects. |
+| Connection works once then fails | The pipe disconnected (Audacity crash or restart). Just try again — audacity-mcp-max auto-reconnects. |
 | "Access denied" (Windows) | Audacity and your AI client must run as the same user. Don't mix admin and non-admin. |
 
 ### Pipeline Issues
@@ -373,7 +373,7 @@ The installer enables this automatically, but if it didn't work (e.g. Audacity w
 
 ```
 ┌──────────────┐     stdio      ┌──────────────┐   named pipe   ┌──────────────┐
-│  MCP Client  │◄──────────────►│ AudacityMCP  │◄──────────────►│   Audacity   │
+│  MCP Client  │◄──────────────►│ audacity-mcp-max  │◄──────────────►│   Audacity   │
 │(AI assistant)│    (JSON-RPC)  │   FastMCP    │  (commands)    │              │
 └──────────────┘                └──────────────┘                └──────────────┘
                                        │
@@ -395,7 +395,7 @@ The installer enables this automatically, but if it didn't work (e.g. Audacity w
 ### Project Structure
 
 ```
-AudacityMCP/
+audacity-mcp-max/
 ├── audacity_mcp/
 │   ├── main.py                 # FastMCP server entry point
 │   ├── audacity_client.py      # Cross-platform named pipe client
@@ -465,7 +465,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines.
 
 ## Support
 
-If AudacityMCP has saved you time or helped with your audio projects, consider buying me a coffee:
+If audacity-mcp-max has saved you time or helped with your audio projects, consider buying me a coffee:
 
 <p align="center">
   <a href="https://buymeacoffee.com/xdarkzx">

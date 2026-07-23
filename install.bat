@@ -3,7 +3,7 @@ setlocal enabledelayedexpansion
 
 echo.
 echo  ============================================
-echo   AudacityMCP - One-Click Installer
+echo   audacity-mcp-max - One-Click Installer
 echo   AI-powered audio editing in Audacity
 echo  ============================================
 echo.
@@ -36,7 +36,7 @@ if %errorlevel% neq 0 (
         exit /b 0
     ) else (
         echo.
-        echo  AudacityMCP requires Python 3.10+ to run.
+        echo  audacity-mcp-max requires Python 3.10+ to run.
         echo  Install it and come back — we'll be here!
         echo.
         echo  Download from: https://www.python.org/downloads/
@@ -69,13 +69,13 @@ if !PY_MAJOR! equ 3 if !PY_MINOR! lss 10 (
     exit /b 1
 )
 
-:: ── Install audacity-mcp from PyPI ────────────────────────
+:: ── Install audacity-mcp-max from GitHub ───────────────────────
 :: Warn if running inside a virtual environment
 if defined VIRTUAL_ENV (
     echo.
     echo  WARNING: You are inside a virtual environment.
-    echo  audacity-mcp should be installed globally so Claude Desktop can find it.
-    echo  Deactivate your venv first, or run: pip install audacity-mcp outside of it.
+    echo  audacity-mcp-max should be installed globally so Claude Desktop can find it.
+    echo  Deactivate your venv first, or run: pip install git+https://github.com/ringo380/audacity-mcp-max.git outside of it.
     echo.
     pause
     exit /b 1
@@ -83,7 +83,7 @@ if defined VIRTUAL_ENV (
 
 :: Check if pip is available
 echo.
-echo [2/5] Installing audacity-mcp from PyPI...
+echo [2/5] Installing audacity-mcp-max from GitHub...
 python -m pip --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo   pip not found, installing pip...
@@ -98,16 +98,16 @@ if %errorlevel% neq 0 (
     )
 )
 python -m pip install --upgrade pip >nul 2>&1
-python -m pip install audacity-mcp
+python -m pip install git+https://github.com/ringo380/audacity-mcp-max.git
 if %errorlevel% neq 0 (
     echo.
     echo  ERROR: pip install failed. Try running as administrator,
-    echo  or run manually: python -m pip install audacity-mcp
+    echo  or run manually: python -m pip install git+https://github.com/ringo380/audacity-mcp-max.git
     echo.
     pause
     exit /b 1
 )
-echo   audacity-mcp installed successfully!
+echo   audacity-mcp-max installed successfully!
 
 :: ── Enable mod-script-pipe in Audacity ──────────────────────
 echo.
@@ -133,7 +133,7 @@ if !errorlevel! equ 0 (
 
 :: Ask permission before modifying Audacity config
 echo.
-echo   AudacityMCP needs mod-script-pipe enabled to control Audacity.
+echo   audacity-mcp-max needs mod-script-pipe enabled to control Audacity.
 set /p ENABLE_PIPE="  Would you like to modify the Audacity config to allow MCP access? (y/n): "
 if /i not "!ENABLE_PIPE!"=="y" (
     echo.
@@ -187,7 +187,7 @@ if exist "%CONFIG_FILE%" (
     echo   You need to MANUALLY add this inside your "mcpServers" block:
     echo.
     echo     "audacity": {
-    echo       "command": "audacity-mcp"
+    echo       "command": "audacity-mcp-max"
     echo     }
     echo.
     echo   Opening the config file for you...
@@ -200,7 +200,7 @@ if exist "%CONFIG_FILE%" (
 echo {
 echo   "mcpServers": {
 echo     "audacity": {
-echo       "command": "audacity-mcp"
+echo       "command": "audacity-mcp-max"
 echo     }
 echo   }
 echo }
@@ -226,7 +226,7 @@ echo   3. Ask Claude: "Get info about the current Audacity project"
 echo.
 echo  If you see project info, you're all set!
 echo.
-echo  Docs: https://github.com/xDarkzx/Audacity-MCP
+echo  Docs: https://github.com/ringo380/audacity-mcp-max
 echo  ============================================
 echo.
 pause
