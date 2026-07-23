@@ -1,17 +1,17 @@
+import asyncio
+import os
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 from mcp.server.fastmcp import FastMCP
 from audacity_mcp_shared.error_codes import AudacityMCPError, ErrorCode
 
+from tests.conftest import register_tools
+
 
 class TestToolRegistration:
-    def test_all_tools_register(self):
+    def test_all_tools_register(self, mock_client):
         mcp = FastMCP("TestAudacityMCP")
-        mock_client = MagicMock()
-        mock_client.execute = AsyncMock(return_value={"success": True, "raw": "", "message": "", "data": {}})
-        mock_client.execute_long = AsyncMock(return_value={"success": True, "raw": "", "message": "", "data": {}})
-
-        with patch("server.main.client", mock_client):
+        with patch("audacity_mcp.main.client", mock_client):
             from audacity_mcp.tool_registry import register_all_tools
             register_all_tools(mcp)
 
@@ -55,6 +55,24 @@ class TestPathSafety:
         result = _safe_path(traversal)
         assert ".." not in result
 
+    def test_safe_path_allows_the_temp_dir(self, tmp_path):
+        # On macOS the temp dir resolves under /private/var, which the blocklist
+        # would otherwise reject — see issue #13.
+        import tempfile
+        from audacity_mcp.tools.project_tools import _safe_path
+        target = os.path.join(tempfile.gettempdir(), "audacity-mcp-max-export.wav")
+        assert _safe_path(target) == os.path.realpath(target)
+        assert _safe_path(str(tmp_path / "out.wav"))
+
+    def test_safe_path_still_blocks_system_dir_on_posix(self):
+        import sys
+        if sys.platform == "win32":
+            pytest.skip("POSIX-only test")
+        from audacity_mcp.tools.project_tools import _safe_path
+        with pytest.raises(AudacityMCPError) as exc_info:
+            _safe_path("/etc/passwd")
+        assert exc_info.value.code == ErrorCode.INVALID_PATH
+
     def test_safe_path_blocks_system_dir(self):
         import sys
         if sys.platform != "win32":
@@ -65,18 +83,57 @@ class TestPathSafety:
         assert exc_info.value.code == ErrorCode.INVALID_PATH
 
 
+@pytest.fixture
+def effect_tools(mock_client):
+    return register_tools("effects_tools", mock_client)
+
+
 class TestEffectValidation:
-    def test_amplify_rejects_zero(self):
-        """ratio=0 would silence audio — should be rejected."""
-        from audacity_mcp_shared.error_codes import AudacityMCPError, ErrorCode
-        # We can't call the async tool directly, but we can verify the validation logic
-        assert True  # Covered by the ratio <= 0 check in effects_tools.py
+    """Call the registered tool and assert on the raised error code.
 
-    def test_phaser_rejects_odd_stages(self):
-        """Phaser stages must be even."""
-        # Validation: if not 2 <= stages <= 24 or stages % 2 != 0
-        assert 3 % 2 != 0  # odd number rejected
+    These replace three placeholders that asserted `True` and `3 % 2 != 0`,
+    i.e. they exercised none of the code they claimed to cover.
+    """
 
-    def test_equalization_rejects_even_length(self):
-        """EQ filter length must be odd."""
-        assert 4000 % 2 == 0  # even number rejected
+    def test_amplify_rejects_zero_ratio(self, effect_tools):
+        with pytest.raises(AudacityMCPError) as exc_info:
+            asyncio.run(effect_tools["effect_amplify"].fn(ratio=0))
+        assert exc_info.value.code == ErrorCode.VALUE_OUT_OF_RANGE
+
+    def test_amplify_rejects_negative_ratio(self, effect_tools):
+        with pytest.raises(AudacityMCPError) as exc_info:
+            asyncio.run(effect_tools["effect_amplify"].fn(ratio=-1.5))
+        assert exc_info.value.code == ErrorCode.VALUE_OUT_OF_RANGE
+
+    def test_amplify_passes_valid_ratio_through(self, effect_tools, mock_client):
+        result = asyncio.run(effect_tools["effect_amplify"].fn(ratio=1.5))
+        assert result["success"] is True
+        mock_client.execute_long.assert_awaited_once_with("Amplify", Ratio=1.5)
+
+    def test_phaser_rejects_odd_stages(self, effect_tools):
+        with pytest.raises(AudacityMCPError) as exc_info:
+            asyncio.run(effect_tools["effect_phaser"].fn(stages=3))
+        assert exc_info.value.code == ErrorCode.VALUE_OUT_OF_RANGE
+
+    def test_phaser_rejects_stages_above_range(self, effect_tools):
+        with pytest.raises(AudacityMCPError) as exc_info:
+            asyncio.run(effect_tools["effect_phaser"].fn(stages=26))
+        assert exc_info.value.code == ErrorCode.VALUE_OUT_OF_RANGE
+
+    def test_phaser_accepts_even_stages(self, effect_tools, mock_client):
+        asyncio.run(effect_tools["effect_phaser"].fn(stages=4))
+        assert mock_client.execute_long.await_args[1]["Stages"] == 4
+
+    def test_equalization_rejects_even_length(self, effect_tools):
+        with pytest.raises(AudacityMCPError) as exc_info:
+            asyncio.run(effect_tools["effect_equalization"].fn(length=4000))
+        assert exc_info.value.code == ErrorCode.INVALID_PARAMETER
+
+    def test_equalization_rejects_length_out_of_range(self, effect_tools):
+        with pytest.raises(AudacityMCPError) as exc_info:
+            asyncio.run(effect_tools["effect_equalization"].fn(length=9))
+        assert exc_info.value.code == ErrorCode.VALUE_OUT_OF_RANGE
+
+    def test_equalization_accepts_odd_length(self, effect_tools, mock_client):
+        asyncio.run(effect_tools["effect_equalization"].fn(length=4001))
+        assert mock_client.execute_long.await_args[1]["FilterLength"] == 4001
