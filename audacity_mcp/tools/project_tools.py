@@ -5,6 +5,7 @@ from audacity_mcp_shared.error_codes import AudacityMCPError, ErrorCode
 
 
 _BLOCKED_DIRS = None
+_TEMP_DIR = None
 
 
 def _get_blocked_dirs():
@@ -26,11 +27,26 @@ def _get_blocked_dirs():
     return _BLOCKED_DIRS
 
 
+def _temp_dir():
+    """The system temp directory, resolved. Cached: realpath is not free."""
+    global _TEMP_DIR
+    if _TEMP_DIR is None:
+        import tempfile
+
+        _TEMP_DIR = os.path.normcase(os.path.realpath(tempfile.gettempdir()))
+    return _TEMP_DIR
+
+
 def _safe_path(path: str) -> str:
     """Validate and canonicalize a file path. Returns the resolved absolute path."""
     if not os.path.isabs(path):
         raise AudacityMCPError(ErrorCode.INVALID_PATH, "Path must be absolute")
     resolved = os.path.realpath(path)
+    # The temp directory is a legitimate export target and on macOS it lives
+    # under /private/var, which the blocklist below would otherwise reject.
+    temp_dir = _temp_dir()
+    if os.path.normcase(resolved).startswith(temp_dir + os.sep):
+        return resolved
     # Block system directories
     for blocked in _get_blocked_dirs():
         check = os.path.normcase(resolved)

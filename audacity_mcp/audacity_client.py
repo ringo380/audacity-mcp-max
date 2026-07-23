@@ -77,6 +77,16 @@ class AudacityClient:
         except AudacityMCPError:
             self._close_pipes()
             raise
+        except FileNotFoundError:
+            # Same diagnostic the Win32 branch gives for ERROR_FILE_NOT_FOUND.
+            # Without this, a missing FIFO on POSIX surfaced as a bare
+            # PIPE_OPEN_FAILED with an errno string and no hint about the module.
+            self._close_pipes()
+            raise AudacityMCPError(
+                ErrorCode.PIPE_NOT_FOUND,
+                "Audacity pipe not found. Is Audacity running with mod-script-pipe enabled? "
+                "(Edit > Preferences > Modules > mod-script-pipe = Enabled, then restart Audacity)",
+            )
         except OSError as e:
             self._close_pipes()
             raise AudacityMCPError(ErrorCode.PIPE_OPEN_FAILED, str(e))
@@ -335,5 +345,9 @@ class AudacityClient:
                 raise AudacityMCPError(ErrorCode.COMMAND_FAILED, str(e))
         return parse_response(raw)
 
-    async def close(self):
+    def close_sync(self):
+        """Synchronous shutdown, for callers that cannot await — notably atexit."""
         self._close_pipes()
+
+    async def close(self):
+        self.close_sync()

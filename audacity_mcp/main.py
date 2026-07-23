@@ -7,7 +7,10 @@ from audacity_mcp.tool_registry import register_all_tools
 
 mcp = FastMCP("AudacityMCPMax")
 client = AudacityClient()
-atexit.register(client.close)
+# atexit calls its callbacks synchronously, so registering the async close()
+# only ever created a coroutine that was discarded — the pipes were never
+# closed at shutdown (issue #3).
+atexit.register(client.close_sync)
 
 register_all_tools(mcp)
 
