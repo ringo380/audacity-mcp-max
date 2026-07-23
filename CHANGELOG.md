@@ -2,6 +2,20 @@
 
 All notable changes to audacity-mcp-max will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- Shutdown never closed the pipes. `atexit` was handed the async `close()`, so it built a coroutine and discarded it. `AudacityClient.close_sync()` is the sync entry point and is what `atexit` gets now. (#3)
+- `_safe_path` rejected the system temp directory. On macOS `$TMPDIR` resolves under `/private/var`, which the POSIX blocklist covers, so every export aimed at a temp path failed with a misleading "system directory" message. Temp paths are allowed ahead of the blocklist; the blocklist is otherwise unchanged. (#13)
+- A missing FIFO on POSIX reported `PIPE_OPEN_FAILED` with a bare errno string. It now reports `PIPE_NOT_FOUND` with the same "is mod-script-pipe enabled" guidance the Windows path already gave.
+
+### Testing
+
+- Repaired the test suite: patch targets still pointed at the pre-rename `server.*` modules, the POSIX pipe tests mocked `builtins.open` while the client had moved to `os.open`, and three "validation" tests asserted tautologies instead of calling anything. (#1)
+- Tests no longer touch the real FIFOs at `/tmp/audacity_script_pipe.*`. An autouse fixture repoints the pipe paths per test, so the outcome no longer depends on whether Audacity happens to be running. Suite runtime went from ~41s to under 1s.
+- Added `scripts/verify.sh`: unit tests, per-module tool registration, and a warning-free import of `audacity_mcp.main`, in one command with a real exit code. (#2)
+
 ## [0.2.0] - 2026-07-23
 
 ### Renamed
