@@ -30,14 +30,23 @@ NEW = (3, 12, 1)
 
 
 class Exec:
-    """Stand-in for os.execv, which would otherwise replace the test runner."""
+    """Stand-in for os.execv, which would otherwise replace the test runner.
+
+    It records the guard variable as it stood *at the moment of the call*. The
+    real os.execv never returns, so the environment this process is left
+    holding afterwards is a state production never reaches: asserting on it let
+    the guard assignment move below the exec - unreachable in production, and a
+    fork bomb on a too-old venv python - with the whole suite still green.
+    """
 
     def __init__(self, error=None):
         self.calls = []
+        self.guards = []
         self.error = error
 
     def __call__(self, path, argv):
         self.calls.append((path, argv))
+        self.guards.append(os.environ.get(plugin_bootstrap.GUARD_ENV))
         if self.error:
             raise self.error
 
@@ -49,9 +58,35 @@ def make_executable(path, body="#!/bin/sh\nexit 0\n"):
     return path
 
 
+def fake_plugin_root(tmp_path):
+    """A copy of the plugin's own scripts, with no .venv and no uv near it.
+
+    The real repo has a .venv as soon as anyone has launched the server once,
+    so a test that ran the shipped scripts in place could never reach the uv
+    branch - it would take the venv every time and quietly stop testing the
+    thing it was written for.
+    """
+    root = tmp_path / "plugin"
+    (root / "scripts").mkdir(parents=True)
+    for name in ("plugin_bootstrap.py", "plugin_doctor.py"):
+        shutil.copy(str(REPO / "scripts" / name), str(root / "scripts" / name))
+    (root / ".claude-plugin").mkdir()
+    (root / ".claude-plugin" / "plugin.json").write_text('{"version": "0.0.0-test"}\n')
+    return root
+
+
 @pytest.fixture(autouse=True)
 def no_inherited_guard(monkeypatch):
-    monkeypatch.delenv(plugin_bootstrap.GUARD_ENV, raising=False)
+    """Unset the guard for the test, and restore whatever was there after it.
+
+    setenv first so monkeypatch records the pre-test state even when it is
+    "absent": production sets this variable itself, and a plain delenv records
+    nothing to restore when the variable did not exist yet. That leaked the
+    flag into the pytest process, where test_plugin_doctor.py's subprocesses
+    (which pass env=None) inherited a silently disarmed bootstrap.
+    """
+    monkeypatch.setenv(plugin_bootstrap.GUARD_ENV, "")
+    monkeypatch.delenv(plugin_bootstrap.GUARD_ENV)
 
 
 class TestReexecIfOld:
@@ -82,18 +117,22 @@ class TestReexecIfOld:
 
     def test_falls_back_to_uv_when_there_is_no_venv(self, tmp_path, monkeypatch):
         monkeypatch.setattr(sys, "argv", ["plugin_doctor.py"])
+        uv = make_executable(tmp_path / "bin" / "uv")
         exec_ = Exec()
 
         plugin_bootstrap.reexec_if_old(
-            tmp_path / "plugin_doctor.py", tmp_path, uv="/bin/uv", version=OLD, exec_=exec_
+            tmp_path / "plugin_doctor.py", tmp_path, uv=str(uv), version=OLD, exec_=exec_
         )
 
         assert exec_.calls == [
             (
-                "/bin/uv",
+                str(uv),
                 [
-                    "/bin/uv",
+                    str(uv),
                     "run",
+                    # Without --frozen, `uv run` may rewrite uv.lock - a tracked
+                    # file - so running the doctor would dirty a working tree.
+                    "--frozen",
                     "--directory",
                     str(tmp_path),
                     "python",
@@ -101,6 +140,20 @@ class TestReexecIfOld:
                 ],
             )
         ]
+
+    def test_the_script_path_is_absolute(self, tmp_path, monkeypatch):
+        """`uv run --directory X` cds into X, so a relative path would be
+        opened from somewhere other than where the caller found it."""
+        make_executable(tmp_path / ".venv" / "bin" / "python")
+        monkeypatch.setattr(sys, "argv", ["plugin_doctor.py"])
+        monkeypatch.chdir(tmp_path)
+        exec_ = Exec()
+
+        plugin_bootstrap.reexec_if_old("plugin_doctor.py", tmp_path, version=OLD, exec_=exec_)
+
+        passed = exec_.calls[0][1][1]
+        assert os.path.isabs(passed)
+        assert os.path.basename(passed) == "plugin_doctor.py"
 
     def test_degrades_readably_when_there_is_nothing_better(self, tmp_path, monkeypatch):
         monkeypatch.setattr(plugin_bootstrap, "find_uv", lambda: None)
@@ -146,8 +199,15 @@ class TestReexecIfOld:
     def test_the_guard_is_set_for_the_child(self, tmp_path, monkeypatch):
         make_executable(tmp_path / ".venv" / "bin" / "python")
         monkeypatch.setattr(sys, "argv", ["s.py"])
-        plugin_bootstrap.reexec_if_old("s.py", tmp_path, version=OLD, exec_=Exec())
-        assert os.environ.get(plugin_bootstrap.GUARD_ENV) == "1"
+        exec_ = Exec()
+
+        plugin_bootstrap.reexec_if_old("s.py", tmp_path, version=OLD, exec_=exec_)
+
+        # What the child inherits at exec time. Checking os.environ after the
+        # call instead passes even with the assignment moved below the exec,
+        # where production - which never returns from execv - would never run
+        # it, and a too-old venv python would re-exec forever.
+        assert exec_.guards == ["1"]
 
     def test_a_failed_exec_degrades_instead_of_raising(self, tmp_path, monkeypatch):
         make_executable(tmp_path / ".venv" / "bin" / "python")
@@ -157,9 +217,84 @@ class TestReexecIfOld:
         note = plugin_bootstrap.reexec_if_old("s.py", tmp_path, version=OLD, exec_=exec_)
 
         assert "Exec format error" in note
-        # The guard has to come back off, or a later attempt in the same
-        # process would refuse for the wrong reason.
+        # Set for the child that was about to exist...
+        assert exec_.guards == ["1"]
+        # ...and back off afterwards, or a later attempt in the same process
+        # would refuse for the wrong reason.
         assert plugin_bootstrap.GUARD_ENV not in os.environ
+
+
+class TestTheCandidateIsProbedBeforeExecing:
+    """os.execv is a point of no return.
+
+    Once it succeeds the child's exit code is the doctor's, so an interpreter
+    that starts and dies takes the report with it: a .venv whose base
+    interpreter was removed or upgraded exits 1 with `dyld: Library not
+    loaded: libpython` and nothing else, and a `uv run` that cannot sync exits
+    2. Both broke plugin_doctor.py's always-exit-0 contract.
+    """
+
+    def test_a_dead_venv_falls_through_to_uv(self, tmp_path, monkeypatch):
+        make_executable(
+            tmp_path / ".venv" / "bin" / "python",
+            "#!/bin/sh\necho 'dyld: Library not loaded: libpython' >&2\nexit 1\n",
+        )
+        uv = make_executable(tmp_path / "bin" / "uv")
+        monkeypatch.setattr(sys, "argv", ["s.py"])
+        exec_ = Exec()
+
+        note = plugin_bootstrap.reexec_if_old(
+            "s.py", tmp_path, uv=str(uv), version=OLD, exec_=exec_
+        )
+
+        assert note is None
+        assert [call[0] for call in exec_.calls] == [str(uv)]
+
+    def test_a_dead_venv_with_no_uv_degrades_rather_than_execing(self, tmp_path, monkeypatch):
+        venv = make_executable(tmp_path / ".venv" / "bin" / "python", "#!/bin/sh\nexit 1\n")
+        monkeypatch.setattr(plugin_bootstrap, "find_uv", lambda: None)
+        exec_ = Exec()
+
+        note = plugin_bootstrap.reexec_if_old("s.py", tmp_path, version=OLD, exec_=exec_)
+
+        assert exec_.calls == []
+        assert "3.9.6" in note
+        assert str(venv) in note
+
+    def test_a_uv_that_cannot_run_degrades_rather_than_execing(self, tmp_path):
+        """`uv run` exits 2 on a first sync with no network, a lock that no
+        longer matches pyproject, or a plugin directory it cannot write."""
+        uv = make_executable(tmp_path / "bin" / "uv", "#!/bin/sh\nexit 2\n")
+        exec_ = Exec()
+
+        note = plugin_bootstrap.reexec_if_old(
+            "s.py", tmp_path, uv=str(uv), version=OLD, exec_=exec_
+        )
+
+        assert exec_.calls == []
+        assert "not a broken install" in note
+        assert str(uv) in note
+
+    def test_the_probe_rejects_an_interpreter_that_runs_but_is_too_old(self):
+        """A .venv built by the old python3 starts perfectly well and still
+        cannot import the project, so execing it only moves the same failure
+        one process along."""
+        path = older_python()
+        if not path:
+            pytest.skip("no interpreter older than 3.10 on this machine")
+        assert plugin_bootstrap.interpreter_works([path]) is False
+
+    def test_a_probe_that_hangs_is_given_up_on(self, tmp_path):
+        """An MCP host kills the Bash call these run under after a couple of
+        minutes, so a `uv run` stuck downloading an interpreter would cost the
+        user the whole report. Answering late is recoverable; hanging is not."""
+        stuck = make_executable(tmp_path / "bin" / "uv", "#!/bin/sh\nsleep 30\n")
+        assert plugin_bootstrap.interpreter_works([str(stuck)], timeout=0.5) is False
+
+    def test_the_probe_accepts_a_usable_interpreter(self):
+        # The one that has to say yes: without this the probe could reject
+        # everything and every test above would still pass.
+        assert plugin_bootstrap.interpreter_works([sys.executable]) is True
 
 
 class TestTranscriptionState:
@@ -280,9 +415,94 @@ class TestUnderARealOldInterpreter:
         proc = self.run(old, "plugin_doctor.py")
         assert "transcription extra: unknown" in proc.stdout
 
-    def test_setup_exits_nonzero_with_one_line_and_no_traceback(self, old):
+    def test_setup_exits_three_with_one_line_and_no_traceback(self, old):
         proc = self.run(old, "audacity_setup.py")
-        assert proc.returncode != 0
+        # The exact code, not merely non-zero: CHANGELOG and commands/setup.md
+        # both name it, and 2 already means "refused to write the config".
+        assert proc.returncode == 3
         assert "Traceback" not in proc.stderr
         assert "not a broken install" in proc.stderr
         assert len(proc.stderr.strip().splitlines()) == 1
+
+
+class TestTheReexecItselfUnderARealOldInterpreter:
+    """The other half: everything above forces the degraded branch, so the
+    re-exec proper was evidenced only by a manual transcript. These run the
+    shipped plugin_doctor.py under a real old python3, against a copied plugin
+    root so the developer's own .venv cannot decide the outcome.
+    """
+
+    @pytest.fixture
+    def old(self):
+        path = older_python()
+        if not path:
+            pytest.skip("no interpreter older than 3.10 on this machine")
+        return path
+
+    def run(self, python, root, uv_search):
+        environ = dict(os.environ)
+        environ["PATH"] = "/usr/bin:/bin"
+        environ["AUDACITY_MCP_UV_SEARCH"] = uv_search
+        environ.pop("UV_BIN", None)
+        environ.pop(plugin_bootstrap.GUARD_ENV, None)
+        return subprocess.run(
+            [python, str(root / "scripts" / "plugin_doctor.py")],
+            capture_output=True,
+            text=True,
+            cwd=str(root),
+            env=environ,
+            timeout=120,
+        )
+
+    def test_it_reexecs_under_uv_with_the_arguments_the_launcher_would_use(self, old, tmp_path):
+        root = fake_plugin_root(tmp_path)
+        log = tmp_path / "uv-argv.txt"
+        uv = make_executable(
+            tmp_path / "bin" / "uv",
+            "#!/bin/sh\nprintf '%%s\\n' \"$@\" >> '%s'\nexit 0\n" % log,
+        )
+
+        proc = self.run(old, root, str(uv))
+
+        assert proc.returncode == 0, proc.stderr
+        lines = log.read_text().splitlines()
+        # The last invocation is the exec; the one before it is the probe that
+        # now has to pass before any exec happens at all.
+        assert lines[-6:] == [
+            "run",
+            "--frozen",
+            "--directory",
+            str(root),
+            "python",
+            str(root / "scripts" / "plugin_doctor.py"),
+        ]
+        assert "-c" in lines[:-6]
+
+    def test_a_venv_that_cannot_load_still_produces_a_report(self, old, tmp_path):
+        """The regression this class exists for: exec succeeded, the child died
+        loading libpython, and the doctor exited 1 with no report at all."""
+        root = fake_plugin_root(tmp_path)
+        make_executable(
+            root / ".venv" / "bin" / "python",
+            "#!/bin/sh\necho 'dyld: Library not loaded: libpython' >&2\nexit 1\n",
+        )
+
+        proc = self.run(old, root, str(tmp_path / "no" / "such" / "uv"))
+
+        assert proc.returncode == 0, proc.stderr
+        assert "plugin version: 0.0.0-test" in proc.stdout
+        assert "not a broken install" in proc.stdout
+        assert "Traceback" not in proc.stderr
+
+    def test_a_uv_that_cannot_sync_still_produces_a_report(self, old, tmp_path):
+        root = fake_plugin_root(tmp_path)
+        uv = make_executable(
+            tmp_path / "bin" / "uv",
+            "#!/bin/sh\necho 'error: failed to sync' >&2\nexit 2\n",
+        )
+
+        proc = self.run(old, root, str(uv))
+
+        assert proc.returncode == 0, proc.stderr
+        assert "plugin version: 0.0.0-test" in proc.stdout
+        assert "not a broken install" in proc.stdout

@@ -19,6 +19,16 @@ first:
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/plugin_doctor.py"
 ```
 
+On an old-`python3` machine this re-runs itself under `uv run`, and a first run
+there builds the venv before it can print anything, so it can take a minute or
+two; after that it is instant. If it produces no output at all, or the shell
+reports `python3: command not found` or opens a Command Line Tools install
+prompt, this machine has no `python3` - which is a supported state, since uv is
+what provides Python here. Tell the user to install uv from
+https://docs.astral.sh/uv/ and re-run, or run the script with the plugin's own
+interpreter (`"${CLAUDE_PLUGIN_ROOT}/.venv/bin/python"`) if the server has ever
+started.
+
 Read the output and note anything that is not in a good state:
 
 - **`uv: not found`** - the server never started. This is the whole problem.

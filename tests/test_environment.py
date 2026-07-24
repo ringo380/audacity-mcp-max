@@ -154,6 +154,15 @@ class TestAudacityIsRunningOnWindows:
     tasklist prints a whole row per process, not a bare name, so the POSIX
     basename comparison never matched and the answer was permanently False -
     silently reintroducing the revert-on-quit bug this milestone exists to fix.
+
+    Note what the two negative cases below can and cannot hold. The Windows
+    name set is {"audacity.exe"}, and no realistic row contains that string
+    without being that process, so neither can catch a substring-instead-of-
+    equality mutation - only the POSIX pair can, where the set is {"audacity"}
+    and this server's own `audacity-mcp-max` is a substring match. What they do
+    hold is that output must be matched rather than counted, which is the
+    mutation the /FI filter invites. The first-field rule is held by
+    test_true_for_a_real_tasklist_row.
     """
 
     def probe(self, stdout):
@@ -168,10 +177,19 @@ class TestAudacityIsRunningOnWindows:
     def test_false_for_the_no_tasks_banner(self):
         # What tasklist prints when the filter matches nothing. It is a
         # sentence, not a row, and must not be mistaken for a process name.
+        #
+        # The rule this one holds: output has to be *matched*, not counted.
+        # /FI filters server-side, so "any non-empty line means Audacity is
+        # running" is the tempting simplification - and this banner is the
+        # counterexample that makes it wrong. It cannot catch the substring
+        # mutation the POSIX pair catches; see the class docstring.
         banner = "INFO: No tasks are running which match the specified criteria.\n"
         assert self.probe(banner) is False
 
     def test_our_own_server_does_not_count_on_windows_either(self):
+        # Same rule as the banner, from the other side: a row that is a real
+        # process but not this one. Windows also reaches here with no filtering
+        # at all when /FI is unsupported, which is when it matters.
         listing = "audacity-mcp-max.exe          6244 Console                    1     92,116 K\n"
         assert self.probe(listing) is False
 

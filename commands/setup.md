@@ -26,6 +26,12 @@ wants the one thing they are missing, not another pass over all of it.
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/plugin_doctor.py"
 ```
 
+If the shell reports `python3: command not found`, or opens a Command Line Tools
+install prompt instead of running anything, this machine has no `python3` at
+all. That is a supported state - uv is what provides Python for this plugin - so
+do not send the user to install Python: tell them to install uv from
+https://docs.astral.sh/uv/, then re-run this command.
+
 If it reports `uv: not found`, stop and tell the user to install it from
 https://docs.astral.sh/uv/ (or set `UV_BIN`), then restart their MCP client.
 Nothing else in this command matters until that is fixed.
@@ -64,8 +70,15 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/audacity_setup.py" --enable-module
 ```
 
 It backs the file up to `audacity.cfg.bak` first and refuses to write if it
-finds Audacity running, so a "yes" that turns out to be wrong is safe. An exit
-code of 2 means it refused; read the message and follow it.
+finds Audacity running, so a "yes" that turns out to be wrong is safe. Two exit
+codes mean it did nothing, and they are different problems:
+
+- **2** - it refused to write (Audacity running, or the process table could not
+  be read). Read the message and follow it.
+- **3** - it could not run at all under this `python3`, and found no plugin venv
+  and no uv to re-run itself under. The message says so on stderr in one line.
+  Install uv from https://docs.astral.sh/uv/; nothing else here works until
+  then.
 
 ## Step 4: transcription (optional)
 

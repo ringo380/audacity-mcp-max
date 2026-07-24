@@ -19,6 +19,23 @@ import sys
 MIN_PYTHON = (3, 10)
 UV_INSTALL_URL = "https://docs.astral.sh/uv/"
 
+# How long a candidate interpreter gets to answer the probe below.
+#
+# An MCP host runs these scripts through a Bash call of its own that is killed
+# after a couple of minutes, so a probe with no bound costs the user the whole
+# report: `uv run` on a cold cache downloads an interpreter and installs the
+# dependency set, and nothing caps that. 60s is far more than a warm venv or a
+# warm `uv run` needs - both answer in well under a second - and still leaves
+# room to print the degraded report rather than being killed mid-sync. Answering
+# "could not tell" late is recoverable; hanging is not.
+PROBE_TIMEOUT = 60
+
+# Exits 0 only on an interpreter that is actually usable for this project.
+_PROBE_ARGS = [
+    "-c",
+    "import sys; raise SystemExit(0 if sys.version_info[:2] >= %r else 1)" % (MIN_PYTHON,),
+]
+
 # Set on the re-exec so a second-generation process cannot try again. Without it
 # a .venv holding an interpreter that is itself too old would exec forever.
 GUARD_ENV = "AUDACITY_MCP_PY_BOOTSTRAP"
@@ -75,21 +92,54 @@ def _is_current_interpreter(path):
         return os.path.realpath(path) == os.path.realpath(sys.executable)
 
 
-def modern_interpreter_argv(plugin_root, uv=None):
-    """The argv prefix for an interpreter new enough to import the project.
+def interpreter_candidates(plugin_root, uv=None):
+    """Every argv prefix that might be an interpreter new enough for the project.
 
     The venv comes first because it is the environment the server itself runs
     in, so anything it can import is what the server can import. uv is the
     fallback because it works on a fresh install, where .venv does not exist
-    yet - `uv run` builds it.
+    yet - `uv run` builds it. Both are offered, in order: a venv that no longer
+    runs is exactly the case where uv is the way out.
+
+    `--frozen` keeps a read-only diagnostic read-only. Without it `uv run` may
+    rewrite `uv.lock`, which is a tracked file, so running the doctor could
+    dirty a developer's working tree.
     """
+    candidates = []
     venv = venv_python(plugin_root)
     if venv and not _is_current_interpreter(venv):
-        return [venv]
+        candidates.append([venv])
     uv = find_uv() if uv is None else uv
     if uv:
-        return [uv, "run", "--directory", str(plugin_root), "python"]
-    return None
+        candidates.append([uv, "run", "--frozen", "--directory", str(plugin_root), "python"])
+    return candidates
+
+
+def interpreter_works(argv, timeout=PROBE_TIMEOUT):
+    """True when `argv` starts and is new enough to import the project.
+
+    os.execv is a point of no return: once it succeeds the child's exit code is
+    this process's, so an interpreter that fails to load takes the report with
+    it. A .venv whose base interpreter was removed or upgraded prints
+    `dyld: Library not loaded: libpython` and exits 1, and a `uv run` that
+    cannot sync - offline on a first run, a lock that no longer matches
+    pyproject, a read-only plugin directory - exits 2. Either turned the
+    always-exit-0 doctor into a bare error with no report at all, which is the
+    same class of misdiagnosis this bootstrap exists to remove. Ask first, and
+    read anything but a clean 0 as "not usable".
+    """
+    try:
+        proc = subprocess.run(
+            list(argv) + _PROBE_ARGS,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,
+        )
+    except Exception:
+        # Deliberately broad. This decides whether a diagnostic can upgrade
+        # itself; every failure here has to read as "no", never as a raise.
+        return False
+    return proc.returncode == 0
 
 
 def _too_old(version, detail):
@@ -115,7 +165,7 @@ def _too_old(version, detail):
     )
 
 
-def reexec_if_old(script, plugin_root, uv=None, version=None, exec_=None):
+def reexec_if_old(script, plugin_root, uv=None, version=None, exec_=None, probe=None):
     """Re-run `script` under a newer interpreter, or explain why it could not.
 
     Returns None when nothing needed doing (the running interpreter is new
@@ -123,22 +173,41 @@ def reexec_if_old(script, plugin_root, uv=None, version=None, exec_=None):
     single line the caller can print. It never raises: a bootstrap that dies
     while explaining that the interpreter is old is worse than the old
     interpreter.
+
+    `script` is made absolute before it is handed on, because `uv run
+    --directory <plugin root>` changes the working directory of the process
+    that has to open it. On 3.9+ callers pass `__file__`, which is already
+    absolute, but this module claims 3.8 validity and there a directly-run
+    script's `__file__` is the literal argv path.
     """
     version = tuple(sys.version_info)[:3] if version is None else tuple(version)[:3]
     if version[:2] >= MIN_PYTHON:
         return None
     if os.environ.get(GUARD_ENV):
         return _too_old(version, "the interpreter this was already re-run under is old too")
-    argv = modern_interpreter_argv(plugin_root, uv)
-    if argv is None:
+    candidates = interpreter_candidates(plugin_root, uv)
+    if not candidates:
         return _too_old(version, "no newer interpreter and no uv were found")
-    os.environ[GUARD_ENV] = "1"
-    try:
-        (exec_ or os.execv)(argv[0], argv + [str(script)] + list(sys.argv[1:]))
-    except OSError as exc:
-        os.environ.pop(GUARD_ENV, None)
-        return _too_old(version, "re-running under %s failed (%s)" % (argv[0], exc))
-    return None
+    probe = interpreter_works if probe is None else probe
+    unusable = []
+    for argv in candidates:
+        if not probe(argv):
+            # Not fatal on its own: a dead .venv is the case uv is here for.
+            unusable.append(argv[0])
+            continue
+        # The child reads this out of the environment it inherits, so it has to
+        # be set before the exec and taken back off if the exec never happens.
+        os.environ[GUARD_ENV] = "1"
+        try:
+            (exec_ or os.execv)(
+                argv[0], argv + [os.path.abspath(str(script))] + list(sys.argv[1:])
+            )
+        except OSError as exc:
+            os.environ.pop(GUARD_ENV, None)
+            return _too_old(version, "re-running under %s failed (%s)" % (argv[0], exc))
+        # Only reachable under an injected exec; os.execv does not return.
+        return None
+    return _too_old(version, "could not run %s" % ", ".join(unusable))
 
 
 def transcription_state(plugin_root, degraded=None):

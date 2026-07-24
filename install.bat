@@ -131,6 +131,39 @@ if !errorlevel! equ 0 (
     goto :skip_audacity
 )
 
+:: Audacity rewrites audacity.cfg when it quits, so editing it while the app is
+:: open reports success on a setting that is reverted at the next quit. install.sh
+:: refuses in the same two cases, and for the same reason: guessing "not running"
+:: when the process table cannot be read silently restores the bug this guard
+:: exists to prevent, and the manual path below always works.
+set "AUD_TASKS=%TEMP%\audacity-mcp-max-tasklist.txt"
+set "AUD_RUNNING="
+tasklist /FI "IMAGENAME eq audacity.exe" /NH >"%AUD_TASKS%" 2>nul
+set "TASKLIST_RC=!errorlevel!"
+findstr /i /c:"audacity.exe" "%AUD_TASKS%" >nul 2>&1
+if !errorlevel! equ 0 set "AUD_RUNNING=1"
+del "%AUD_TASKS%" >nul 2>&1
+if defined AUD_RUNNING (
+    echo.
+    echo   Audacity is running. It rewrites its config when it quits, so a change
+    echo   made now would be undone the next time you close it.
+    echo   Fully quit Audacity, then run this installer again - or set it by hand:
+    echo   Edit ^> Preferences ^> Modules ^> mod-script-pipe ^> Enabled
+    goto :skip_audacity
+)
+:: A non-zero code here means tasklist is missing, or the machine would not
+:: report its process table at all: a filter that matches nothing still exits 0
+:: and prints the "INFO: No tasks are running" banner. (Kept outside the block
+:: below - cmd mis-parses a :: comment inside parentheses.)
+if !TASKLIST_RC! neq 0 (
+    echo.
+    echo   Cannot tell whether Audacity is running ^(tasklist failed^), and editing
+    echo   its config while it is open would be undone at the next quit.
+    echo   Quit Audacity if it is open, then set it by hand:
+    echo   Edit ^> Preferences ^> Modules ^> mod-script-pipe ^> Enabled
+    goto :skip_audacity
+)
+
 :: Ask permission before modifying Audacity config
 echo.
 echo   audacity-mcp-max needs mod-script-pipe enabled to control Audacity.
