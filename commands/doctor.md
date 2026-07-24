@@ -29,6 +29,10 @@ Read the output and note anything that is not in a good state:
   yet this session.
 - **`mod-script-pipe: disabled` / `ask` / `absent`** - Audacity will not create
   the pipes. Point the user at `/audacity:setup`.
+- **`mod-script-pipe: no-config`** - no `audacity.cfg` was found at all, meaning
+  Audacity has never been launched on this machine (or its config was reset).
+  Tell the user to launch Audacity once so it writes its config, then run
+  `/audacity:setup`.
 - **`pipe (to)` or `pipe (from)` missing** - Audacity is not running, or was not
   restarted after the module was enabled.
 

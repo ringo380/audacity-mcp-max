@@ -6,6 +6,7 @@ All notable changes to audacity-mcp-max will be documented in this file.
 
 ### Fixed
 
+- `scripts/plugin_doctor.py` could exit non-zero. The pipe and config section at the end of `main()` was not guarded like the sections before it, so a broken or partial install - the exact situation the doctor exists to diagnose - could make an import raise and the process exit with a traceback instead of a report. That section is now wrapped the same way, and `commands/doctor.md` documents the `mod-script-pipe: no-config` state (no `audacity.cfg` found at all) alongside the others. (docs/design/2026-07-24-plugin-packaging.md)
 - Shutdown never closed the pipes. `atexit` was handed the async `close()`, so it built a coroutine and discarded it. `AudacityClient.close_sync()` is the sync entry point and is what `atexit` gets now. (#3)
 - `_safe_path` rejected the system temp directory. On macOS `$TMPDIR` resolves under `/private/var`, which the POSIX blocklist covers, so every export aimed at a temp path failed with a misleading "system directory" message. Temp paths are allowed ahead of the blocklist; the blocklist is otherwise unchanged. (#13)
 - `project_export_audio` exported only the current selection. `Export2` acts on the selection, and nothing established one first, so a 78.7s project could produce a 3.8s file reported as a successful export. It now selects every track and the whole timeline first; pass `whole_project=False` for the old behaviour. (#6)

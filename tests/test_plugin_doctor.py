@@ -4,6 +4,7 @@ audacity_health_check answers "can I reach Audacity". This answers "is the
 plugin itself assembled correctly", which the server cannot: it is running
 inside the environment it would be reporting on.
 """
+import builtins
 import contextlib
 import os
 import pathlib
@@ -101,6 +102,35 @@ def test_reports_whether_the_transcription_extra_is_present():
     assert "transcription extra:" in proc.stdout
 
 
+def test_pipe_and_config_failure_does_not_break_the_zero_exit_contract(capsys, monkeypatch):
+    """A broken install is exactly the situation this diagnostic exists for.
+
+    Simulates audacity_mcp_shared failing to import - a partial checkout, a
+    half-merged file, anything that breaks that package - by making the
+    import itself raise, then asserts main() still returns 0 and that the
+    sections before the pipe/config block (plugin version, uv, venv) still
+    printed. A diagnostic that dies halfway through a report is barely better
+    than one that exits non-zero.
+    """
+    real_import = builtins.__import__
+
+    def hostile_import(name, *args, **kwargs):
+        if name.startswith("audacity_mcp_shared"):
+            raise ImportError("simulated partial install")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", hostile_import)
+
+    rc = plugin_doctor.main()
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "pipe and config info: unavailable" in captured.out
+    assert "plugin version:" in captured.out
+    assert "uv:" in captured.out
+    assert "venv built:" in captured.out
+
+
 class TestFindUvAgreesWithTheLauncher:
     """plugin_doctor.find_uv() deliberately re-implements launch-mcp.sh's
     resolution order in Python, because the launcher cannot shell out to
@@ -149,3 +179,29 @@ class TestFindUvAgreesWithTheLauncher:
         assert not ignored_record.exists()
 
         assert doctor_find_uv(env) == str(chosen)
+
+    def test_agree_on_the_hardcoded_default_search_list(self, tmp_path):
+        """The three tests above all rely on base_env(), which always sets
+        AUDACITY_MCP_UV_SEARCH - so none of them ever exercises either
+        resolver's own hardcoded default list. Editing one hardcoded default
+        (plugin_doctor.py's or launch-mcp.sh's) without the other still
+        passes all three, which is exactly the drift this class exists to
+        catch.
+
+        This unsets the override and plants a fake uv at the natural default
+        location - $HOME/.local/bin/uv, where uv actually installs - so the
+        only way either resolver can succeed is by falling all the way
+        through to its own hardcoded list. PATH stays hostile and UV_BIN
+        stays unset so nothing else can find it first.
+        """
+        record = tmp_path / "argv.txt"
+        bindir = tmp_path / "home" / ".local" / "bin"
+        fake = make_fake_uv(bindir, record)
+        env = base_env(tmp_path, REPO)
+        del env["AUDACITY_MCP_UV_SEARCH"]
+
+        proc = run_launcher(env, tmp_path)
+        assert proc.returncode == 0, proc.stderr
+        assert record.exists()
+
+        assert doctor_find_uv(env) == str(fake)

@@ -73,17 +73,26 @@ def main() -> int:
     except ImportError:
         print("transcription extra: not installed (/audacity:setup --transcription)")
 
-    sys.path.insert(0, str(REPO))
-    from audacity_mcp_shared.constants import PipePaths
-    from audacity_mcp_shared.environment import audacity_cfg_path, mod_script_pipe_state
+    try:
+        sys.path.insert(0, str(REPO))
+        from audacity_mcp_shared.constants import PipePaths
+        from audacity_mcp_shared.environment import audacity_cfg_path, mod_script_pipe_state
 
-    PipePaths.rediscover()
-    print(f"pipe (to):   {PipePaths.TO_SRV} {'present' if os.path.exists(PipePaths.TO_SRV) else 'missing'}")
-    print(f"pipe (from): {PipePaths.FROM_SRV} {'present' if os.path.exists(PipePaths.FROM_SRV) else 'missing'}")
+        PipePaths.rediscover()
+        print(f"pipe (to):   {PipePaths.TO_SRV} {'present' if os.path.exists(PipePaths.TO_SRV) else 'missing'}")
+        print(f"pipe (from): {PipePaths.FROM_SRV} {'present' if os.path.exists(PipePaths.FROM_SRV) else 'missing'}")
 
-    cfg = audacity_cfg_path()
-    print(f"audacity.cfg: {cfg or 'not found'}")
-    print(f"mod-script-pipe: {mod_script_pipe_state(cfg)}")
+        cfg = audacity_cfg_path()
+        print(f"audacity.cfg: {cfg or 'not found'}")
+        print(f"mod-script-pipe: {mod_script_pipe_state(cfg)}")
+    except Exception as e:
+        # Broad on purpose: this is the section most likely to break on a
+        # partial install (a stale checkout missing audacity_mcp_shared, a
+        # syntax error in a half-merged file, a permissions error walking
+        # /proc during pipe rediscovery on Linux). An ImportError is only one
+        # of the ways that goes wrong, and the whole point of this script is
+        # that none of those ways may turn into a non-zero exit.
+        print(f"pipe and config info: unavailable ({e})")
     return 0
 
 
