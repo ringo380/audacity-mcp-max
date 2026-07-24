@@ -28,10 +28,15 @@ classifiers = [
 requires-python = ">=3.10"
 dependencies = [
     "mcp[cli]>=1.0.0",
-    "faster-whisper>=1.0.0",
 ]
 
 [project.optional-dependencies]
+# faster-whisper drags in ctranslate2 and onnxruntime and then downloads models
+# on first use. That is a large, silent tax on someone who only wants to clean
+# up a recording, so the 7 transcription tools ask for it explicitly instead.
+transcription = [
+    "faster-whisper>=1.0.0",
+]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",

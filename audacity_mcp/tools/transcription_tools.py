@@ -32,16 +32,27 @@ def _get_cache_dir() -> str:
     return cache
 
 
-def _check_whisper_installed() -> None:
-    """Check that faster-whisper is installed. Gives a clean error if not."""
+def _whisper_available() -> bool:
+    """Whether the transcription extra is installed."""
     try:
         import faster_whisper  # noqa: F401
     except ImportError:
-        raise AudacityMCPError(
-            ErrorCode.VALIDATION_FAILED,
-            "Transcription requires 'faster-whisper'. Install it with: pip install faster-whisper  "
-            "See the Transcription Setup section in the installation guide for details.",
-        )
+        return False
+    return True
+
+
+def _check_whisper_installed() -> None:
+    """Raise a clean error naming the fix for both kinds of install."""
+    if _whisper_available():
+        return
+    raise AudacityMCPError(
+        ErrorCode.VALIDATION_FAILED,
+        "Transcription needs the optional 'transcription' extra, which is not installed. "
+        "In Claude Code, run /audacity:setup --transcription. "
+        'Otherwise: pip install "audacity-mcp-max[transcription]". '
+        "It is a large download (ctranslate2 and onnxruntime) and the model itself is "
+        "fetched on first use.",
+    )
 
 
 def _validate_model_size(model_size: str) -> None:
