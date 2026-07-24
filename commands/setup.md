@@ -15,6 +15,11 @@ Three things have to be true, and each fails differently:
    Audacity only creates the script pipes at launch.
 3. **Audacity is running** - the pipes exist only while it is open.
 
+**If the user invoked this as `/audacity:setup --transcription`, do Step 4 only
+and stop.** That is the exact command the transcription tools name when the
+extra is missing, so someone arriving here has a working setup already and
+wants the one thing they are missing, not another pass over all of it.
+
 ## Step 1: check uv
 
 ```bash
