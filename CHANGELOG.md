@@ -8,6 +8,7 @@ All notable changes to audacity-mcp-max will be documented in this file.
 
 - Shutdown never closed the pipes. `atexit` was handed the async `close()`, so it built a coroutine and discarded it. `AudacityClient.close_sync()` is the sync entry point and is what `atexit` gets now. (#3)
 - `_safe_path` rejected the system temp directory. On macOS `$TMPDIR` resolves under `/private/var`, which the POSIX blocklist covers, so every export aimed at a temp path failed with a misleading "system directory" message. Temp paths are allowed ahead of the blocklist; the blocklist is otherwise unchanged. (#13)
+- Starting a cleanup pipeline while a transcription was running crashed with `RuntimeError: coroutine raised StopIteration`. The "already running" error scanned only the pipeline job store, so a transcription conflict fell off the end of a bare `next()`. The conflicting job is now identified inside `_create_job` while it still holds the lock, covering both stores and closing the race where the blocking job finishes before the caller re-scans. (#10)
 - A missing FIFO on POSIX reported `PIPE_OPEN_FAILED` with a bare errno string. It now reports `PIPE_NOT_FOUND` with the same "is mod-script-pipe enabled" guidance the Windows path already gave.
 
 ### Testing

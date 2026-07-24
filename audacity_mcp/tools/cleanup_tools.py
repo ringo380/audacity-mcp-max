@@ -57,23 +57,48 @@ def register(mcp: FastMCP):
         reports results through the MCP response."""
         pass
 
-    def _has_running_pipeline() -> bool:
-        return any(j["status"] == "running" for j in _jobs.values())
-
-    def _has_running_transcription() -> bool:
+    def _find_running_job() -> tuple[str | None, dict | None, str]:
+        """Return (job_id, job, kind) for whatever is running, or (None, None, "")."""
+        for job_id, job in _jobs.items():
+            if job["status"] == "running":
+                return job_id, job, "pipeline"
         try:
             from audacity_mcp.tools.transcription_tools import _jobs as transcription_jobs
-            return any(j["status"] == "running" for j in transcription_jobs.values())
         except ImportError:
-            return False
+            return None, None, ""
+        for job_id, job in transcription_jobs.items():
+            if job["status"] == "running":
+                return job_id, job, "transcription"
+        return None, None, ""
 
-    async def _create_job(pipeline_name: str) -> tuple[str, dict]:
-        """Create a job dict and return (job_id, job). Also checks for concurrent runs.
-        Uses a lock to prevent race conditions from near-simultaneous calls."""
+    def _conflict_error(job_id: str, job: dict, kind: str) -> dict:
+        """Error dict for a caller that lost the race to whatever is already running."""
+        if kind == "transcription":
+            return {
+                "error": "A transcription is currently running. Wait for it to finish.",
+                "job_id": job_id,
+                "current_step": job.get("current_step", "unknown"),
+                "message": "Use check_transcription_status to monitor the existing job.",
+            }
+        return {
+            "error": "A pipeline is already running. Do NOT start another one.",
+            "job_id": job_id,
+            "current_step": job.get("current_step", "unknown"),
+            "message": "Use check_pipeline_status to monitor the existing pipeline.",
+        }
+
+    async def _create_job(pipeline_name: str) -> tuple[str | None, dict | None, dict | None]:
+        """Create a job dict and return (job_id, job, None).
+
+        On a conflict returns (None, None, error_dict). The conflicting job is
+        identified while the lock is still held, so the caller never has to
+        re-scan a store that may have emptied out in the meantime.
+        """
         async with _job_lock:
             _cleanup_stale_jobs()
-            if _has_running_pipeline() or _has_running_transcription():
-                return None, None
+            running_id, running, kind = _find_running_job()
+            if running is not None:
+                return None, None, _conflict_error(running_id, running, kind)
             job_id = str(uuid.uuid4())[:8]
             job = {
                 "status": "running",
@@ -86,18 +111,7 @@ def register(mcp: FastMCP):
                 "error": None,
             }
             _jobs[job_id] = job
-            return job_id, job
-
-    def _running_job_error() -> dict:
-        """Return error dict when a pipeline is already running."""
-        running = next(j for j in _jobs.values() if j["status"] == "running")
-        running_id = next(k for k, v in _jobs.items() if v is running)
-        return {
-            "error": "A pipeline is already running. Do NOT start another one.",
-            "job_id": running_id,
-            "current_step": running["current_step"],
-            "message": "Use check_pipeline_status to monitor the existing pipeline.",
-        }
+            return job_id, job, None
 
     async def _complete_job(job: dict, label: str, targets: dict):
         """Mark job complete, build result, show popup."""
@@ -953,9 +967,9 @@ def register(mcp: FastMCP):
         IMPORTANT: If remove_noise is True, the first 0.5 seconds should be room tone / silence.
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job = await _create_job("cleanup_audio")
+        job_id, job, conflict = await _create_job("cleanup_audio")
         if job is None:
-            return _running_job_error()
+            return conflict
         coro = _cleanup_audio_pipeline(job, remove_noise, remove_clicks)
         await asyncio.sleep(0)
         return _start_background(job_id, job, coro, "Audio Cleanup")
@@ -1011,9 +1025,9 @@ def register(mcp: FastMCP):
         IMPORTANT: If remove_noise is True, the first 0.5 seconds should be room tone / silence.
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job = await _create_job("podcast_cleanup")
+        job_id, job, conflict = await _create_job("podcast_cleanup")
         if job is None:
-            return _running_job_error()
+            return conflict
         coro = _podcast_pipeline(job, remove_noise, remove_silence)
         await asyncio.sleep(0)
         return _start_background(job_id, job, coro, "Podcast Cleanup")
@@ -1075,9 +1089,9 @@ def register(mcp: FastMCP):
         IMPORTANT: If remove_noise is True, the first 0.5 seconds should be room tone / silence.
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job = await _create_job("audiobook_mastering")
+        job_id, job, conflict = await _create_job("audiobook_mastering")
         if job is None:
-            return _running_job_error()
+            return conflict
         coro = _audiobook_pipeline(job, remove_noise)
         await asyncio.sleep(0)
         return _start_background(job_id, job, coro, "Audiobook Mastering (ACX)")
@@ -1129,9 +1143,9 @@ def register(mcp: FastMCP):
         IMPORTANT: If remove_noise is True, the first 0.5 seconds should be room tone / silence.
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job = await _create_job("interview_cleanup")
+        job_id, job, conflict = await _create_job("interview_cleanup")
         if job is None:
-            return _running_job_error()
+            return conflict
         coro = _interview_pipeline(job, remove_noise, remove_silence)
         await asyncio.sleep(0)
         return _start_background(job_id, job, coro, "Interview Cleanup")
@@ -1177,9 +1191,9 @@ def register(mcp: FastMCP):
         IMPORTANT: If remove_noise is True, the first 0.5 seconds should be room tone / silence.
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job = await _create_job("vocal_cleanup")
+        job_id, job, conflict = await _create_job("vocal_cleanup")
         if job is None:
-            return _running_job_error()
+            return conflict
         coro = _vocal_pipeline(job, remove_noise)
         await asyncio.sleep(0)
         return _start_background(job_id, job, coro, "Vocal Cleanup")
@@ -1221,9 +1235,9 @@ def register(mcp: FastMCP):
         IMPORTANT: The first 0.5 seconds MUST be room tone / ambient noise for noise profiling.
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job = await _create_job("live_cleanup")
+        job_id, job, conflict = await _create_job("live_cleanup")
         if job is None:
-            return _running_job_error()
+            return conflict
         coro = _live_pipeline(job)
         await asyncio.sleep(0)
         return _start_background(job_id, job, coro, "Live Recording Cleanup")
@@ -1283,9 +1297,9 @@ def register(mcp: FastMCP):
             noise_reduce: Apply gentle noise reduction. Default: False
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job = await _create_job(f"mastering_{style}")
+        job_id, job, conflict = await _create_job(f"mastering_{style}")
         if job is None:
-            return _running_job_error()
+            return conflict
 
         style = style.lower().strip()
 
@@ -1408,9 +1422,9 @@ def register(mcp: FastMCP):
 
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job = await _create_job(f"lofi_{intensity}")
+        job_id, job, conflict = await _create_job(f"lofi_{intensity}")
         if job is None:
-            return _running_job_error()
+            return conflict
 
         intensity = intensity.lower().strip()
 
