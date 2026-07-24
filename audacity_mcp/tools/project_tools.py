@@ -1,6 +1,7 @@
 import os
 from mcp.server.fastmcp import FastMCP
-from audacity_mcp_shared.constants import ALLOWED_EXPORT_FORMATS
+from audacity_mcp_shared.audio_file import describe
+from audacity_mcp_shared.constants import ALLOWED_EXPORT_FORMATS, COMMON_SAMPLE_RATES
 from audacity_mcp_shared.error_codes import AudacityMCPError, ErrorCode
 
 
@@ -260,7 +261,9 @@ def register(mcp: FastMCP):
         }
 
     @mcp.tool()
-    async def project_export_audio(path: str, num_channels: int = 2) -> dict:
+    async def project_export_audio(
+        path: str, num_channels: int = 2, whole_project: bool = True
+    ) -> dict:
         """Export the project audio to a file. Format is determined by file extension.
 
         MANDATORY: ALWAYS tell the user where the file will be saved BEFORE exporting.
@@ -277,6 +280,17 @@ def register(mcp: FastMCP):
         Args:
             path: Absolute path for exported file. Extension determines format (wav, mp3, ogg, flac, aiff).
             num_channels: Number of channels (1=mono, 2=stereo). Default: 2
+            whole_project: Select every track and the whole timeline first. Default: True.
+                Audacity's Export2 exports the CURRENT SELECTION, so leaving this
+                on is what makes "export the project" mean the project. Set it to
+                False only when you deliberately want the current selection.
+
+        The result carries a `verified` block read back from the written file:
+        the container actually present, its sample rate, channels and duration.
+        Audacity uses the sticky last-used exporter and will write AIFF into a
+        path named .wav while reporting a WAV export, and it renders at the
+        project sample rate rather than anything asked for here — so a `warning`
+        appears when what landed on disk is not what was requested.
         """
         path = _safe_path(path)
         # Block saving directly to user home folder
@@ -303,7 +317,40 @@ def register(mcp: FastMCP):
         parent_dir = os.path.dirname(path)
         if parent_dir and not os.path.exists(parent_dir):
             os.makedirs(parent_dir, exist_ok=True)
-        return await client.execute_long("Export2", Filename=path, NumChannels=num_channels)
+        if whole_project:
+            # Export2 exports the selection. Both halves are needed: SelAllTracks
+            # takes every track, SelectAll takes the whole timeline.
+            await client.execute("SelAllTracks")
+            await client.execute("SelectAll")
+
+        result = await client.execute_long("Export2", Filename=path, NumChannels=num_channels)
+
+        verified = describe(path)
+        result["verified"] = verified
+        warnings = []
+        if verified["container"] == "unknown" and verified["bytes"] is None:
+            warnings.append(f"Audacity reported success but no file was written at {path}.")
+        else:
+            actual = verified["container"]
+            requested = "wav" if ext == "wav" else ext
+            if actual not in ("unknown", requested):
+                warnings.append(
+                    f"The file is {actual.upper()} data despite the .{ext} extension. Audacity "
+                    "reuses the last exporter it was given and the extension does not override "
+                    "it; set the format in Audacity's export dialog, or convert the file."
+                )
+            if verified["channels"] is not None and verified["channels"] != num_channels:
+                warnings.append(
+                    f"Exported {verified['channels']} channel(s), not the {num_channels} requested."
+                )
+            if verified["sample_rate"] is not None and verified["sample_rate"] not in COMMON_SAMPLE_RATES:
+                warnings.append(
+                    f"Exported at {verified['sample_rate']} Hz, which comes from the project "
+                    "sample rate, not from this call. Most sound devices cannot play it back."
+                )
+        if warnings:
+            result["warnings"] = warnings
+        return result
 
     @mcp.tool()
     async def project_export_labels(path: str) -> dict:
@@ -325,9 +372,20 @@ def register(mcp: FastMCP):
         """Get information about the current project.
 
         Args:
-            info_type: Type of info to retrieve. One of: Tracks, Clips, Envelopes, Labels, Boxes, Commands
+            info_type: Type of info to retrieve. One of: Tracks, Clips, Envelopes, Labels, Boxes
+
+        "Commands" is deliberately not accepted. On Audacity 3.7.8 it pegs the
+        CPU, never answers, and takes the application down with it — with no
+        autosave recovery, so unsaved work is lost.
         """
-        allowed = {"Tracks", "Clips", "Envelopes", "Labels", "Boxes", "Commands"}
+        allowed = {"Tracks", "Clips", "Envelopes", "Labels", "Boxes"}
+        if info_type == "Commands":
+            raise AudacityMCPError(
+                ErrorCode.INVALID_PARAMETER,
+                "info_type='Commands' is blocked: GetInfo Type=Commands hangs Audacity and "
+                "crashes it, losing unsaved work, and it does not recover from autosave. "
+                f"Allowed: {', '.join(sorted(allowed))}",
+            )
         if info_type not in allowed:
             raise AudacityMCPError(
                 ErrorCode.INVALID_PARAMETER,
