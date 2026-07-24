@@ -13,6 +13,7 @@ All notable changes to audacity-mcp-max will be documented in this file.
 
 ### Changed
 
+- The send retry loop is no longer POSIX-only. `_send_raw` retries on every platform and only `_send_attempt` branches: POSIX reopens per attempt, Windows keeps its named-pipe handles and reopens after a failed one. Windows previously got a single attempt with no retry on an empty or truncated read. The loop itself is now covered by tests that run on any OS; the Win32 primitives underneath it are still unverified on a real Windows install. (#11)
 - `execute_long` is now a thin wrapper around `execute` with the long timeout, instead of a second copy of the same 40 lines. Call sites are unchanged. (#12)
 - Removed constants nothing referenced: `Timeouts.PIPE_WRITE`, and the `PIPE_DISCONNECTED`, `COMMAND_NOT_FOUND`, `COMMAND_TIMEOUT`, `COMMAND_REJECTED` and `MISSING_PARAMETER` error codes. Their numbers are recorded in `ErrorCode`'s docstring so a code that becomes useful later can return at its old value, and a test now fails if a member nothing raises reappears. (#14)
 - `ALLOWED_SAMPLE_RATES` was an unused list that duplicated no check; it is now `COMMON_SAMPLE_RATES` and `track_resample` attaches a warning when the requested rate is outside it. The 1-384000 Hz range check is unchanged, so nothing that worked before is rejected — but the rate that later makes Audacity fail to open the sound device is called out at the point it is set. (#14)

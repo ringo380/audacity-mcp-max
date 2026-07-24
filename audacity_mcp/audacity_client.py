@@ -189,37 +189,50 @@ class AudacityClient:
     # bounded retry — closing our ends between attempts so the relay finishes its
     # cycle and we reopen clean — makes it reliable. A bad cycle fails fast
     # (immediate empty read), so the retries are cheap in the common case.
-    _POSIX_SEND_ATTEMPTS = 6
+    _SEND_ATTEMPTS = 6
 
-    def _send_raw(self, command_str: str) -> str:
+    def _send_attempt(self, command_str: str) -> str:
+        """One write-and-read cycle, opening whatever this platform needs first."""
         if sys.platform == "win32":
+            # Named pipes are connection-oriented, so the handles are kept across
+            # commands. _win32_send_raw closes them on failure, which is what makes
+            # the next attempt reopen instead of retrying a dead handle.
             if self._to_pipe is None or self._from_pipe is None:
                 self._open_pipes()
             return self._win32_send_raw(command_str)
+        self._open_pipes()  # always fresh; never cache a fd across commands
+        return self._posix_send_raw(command_str)
 
+    def _send_raw(self, command_str: str) -> str:
         import time
 
         last_raw = ""
         last_err = None
-        for attempt in range(self._POSIX_SEND_ATTEMPTS):
+        for attempt in range(self._SEND_ATTEMPTS):
             try:
-                self._open_pipes()  # always fresh; never cache a fd across commands
-                raw = self._posix_send_raw(command_str)
-                if "BatchCommand finished" in raw:
-                    return raw  # complete, well-formed response
-                if raw.strip():
-                    last_raw = raw  # non-empty but no terminator: keep as fallback
+                raw = self._send_attempt(command_str)
             except AudacityMCPError as e:
                 last_err = e
-            finally:
-                self._close_pipes()  # tear our ends down so the relay re-cycles
+            else:
+                if "BatchCommand finished" in raw:
+                    # Complete, well-formed response. POSIX still drops its ends;
+                    # Windows keeps the connection for the next command.
+                    if sys.platform != "win32":
+                        self._close_pipes()
+                    return raw
+                if raw.strip():
+                    last_raw = raw  # non-empty but no terminator: keep as fallback
+            # The attempt did not produce a usable reply. Drop both ends on either
+            # platform so the next attempt reopens clean rather than retrying a
+            # connection the other side has already given up on.
+            self._close_pipes()
             time.sleep(0.05 * (attempt + 1))
 
         if last_raw:
             return last_raw
         raise last_err or AudacityMCPError(
             ErrorCode.PIPE_READ_FAILED,
-            f"Empty response from Audacity pipe after {self._POSIX_SEND_ATTEMPTS} attempts",
+            f"Empty response from Audacity pipe after {self._SEND_ATTEMPTS} attempts",
         )
 
     def _win32_send_raw(self, command_str: str) -> str:

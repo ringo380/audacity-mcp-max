@@ -86,7 +86,7 @@ class TestPosixSendRaw:
 
     @posix_only
     def test_send_raw_closes_pipes_after_exhausting_retries(self, client, monkeypatch):
-        monkeypatch.setattr(client, "_POSIX_SEND_ATTEMPTS", 2)
+        monkeypatch.setattr(client, "_SEND_ATTEMPTS", 2)
 
         def open_onto_dead_fds():
             r_fd, w_fd = os.pipe()
@@ -118,6 +118,65 @@ class TestPosixSendRaw:
             client._close_pipes()
             os.close(relay_read_fd)
             os.close(relay_write_fd)
+
+
+class TestSendRetryLoop:
+    """The retry loop is platform-independent; only _send_attempt differs.
+
+    These run everywhere, which is the point — the retry that makes this fork
+    reliable used to live inside the POSIX branch, so Windows got one attempt
+    and no test could reach the loop from a Mac or a Linux box.
+    """
+
+    @pytest.fixture(autouse=True)
+    def no_backoff_sleeping(self, monkeypatch):
+        monkeypatch.setattr("time.sleep", lambda _s: None)
+
+    def test_retries_until_a_terminated_reply_arrives(self, client):
+        replies = ["", "", "BatchCommand finished: OK\n"]
+        with patch.object(client, "_send_attempt", side_effect=replies) as attempt:
+            with patch.object(client, "_close_pipes"):
+                raw = client._send_raw("Play:\n")
+        assert raw == "BatchCommand finished: OK\n"
+        assert attempt.call_count == 3
+
+    def test_stops_at_the_attempt_limit(self, client, monkeypatch):
+        monkeypatch.setattr(client, "_SEND_ATTEMPTS", 4)
+        with patch.object(client, "_send_attempt", return_value="") as attempt:
+            with patch.object(client, "_close_pipes"):
+                with pytest.raises(AudacityMCPError) as exc_info:
+                    client._send_raw("Play:\n")
+        assert attempt.call_count == 4
+        assert exc_info.value.code == ErrorCode.PIPE_READ_FAILED
+
+    def test_falls_back_to_an_unterminated_reply(self, client, monkeypatch):
+        monkeypatch.setattr(client, "_SEND_ATTEMPTS", 2)
+        with patch.object(client, "_send_attempt", side_effect=["partial data", ""]):
+            with patch.object(client, "_close_pipes"):
+                assert client._send_raw("Play:\n") == "partial data"
+
+    def test_reraises_the_last_error_when_every_attempt_failed(self, client, monkeypatch):
+        monkeypatch.setattr(client, "_SEND_ATTEMPTS", 2)
+        err = AudacityMCPError(ErrorCode.PIPE_WRITE_FAILED, "boom")
+        with patch.object(client, "_send_attempt", side_effect=err):
+            with patch.object(client, "_close_pipes"):
+                with pytest.raises(AudacityMCPError) as exc_info:
+                    client._send_raw("Play:\n")
+        assert exc_info.value.code == ErrorCode.PIPE_WRITE_FAILED
+
+    def test_a_failed_attempt_drops_both_ends_before_the_next(self, client):
+        """Whatever the platform, a dead connection is not retried in place."""
+        events = []
+        replies = iter(["", "BatchCommand finished: OK\n"])
+
+        def attempt(_cmd):
+            events.append("attempt")
+            return next(replies)
+
+        with patch.object(client, "_send_attempt", side_effect=attempt):
+            with patch.object(client, "_close_pipes", side_effect=lambda: events.append("close")):
+                client._send_raw("Play:\n")
+        assert events[:3] == ["attempt", "close", "attempt"]
 
 
 class TestWin32Pipes:
