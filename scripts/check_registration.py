@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-EXPECTED_TOOLS = 131
+EXPECTED_TOOLS = 132
 
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 

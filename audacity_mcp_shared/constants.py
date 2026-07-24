@@ -17,6 +17,9 @@ class Timeouts:
     PIPE_OPEN = 5.0
     PIPE_READ = 10.0
     COMMAND = 30.0
+    # The health check is what a caller runs when things are already wrong, so
+    # it must not spend the full command timeout confirming silence.
+    HEALTH_CHECK = 5.0
     LONG_COMMAND = 600.0  # 10 minutes — large files (2-3hr podcasts) need this
 
 

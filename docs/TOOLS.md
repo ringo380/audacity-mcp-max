@@ -1,6 +1,6 @@
 # Tool Reference
 
-Complete reference for all 131 tools in audacity-mcp-max.
+Complete reference for all 132 tools in audacity-mcp-max.
 
 ---
 
@@ -575,6 +575,20 @@ Export audio to file. Format is inferred from extension.
 ### `get_default_export_folder`
 
 Get the user's default Music folder for exports. No parameters.
+
+### `audacity_health_check`
+
+Report whether Audacity is reachable, and why not if it isn't. No parameters.
+
+Returns each script pipe separately (path, whether it exists, and its age in
+seconds — the pipe files outlive Audacity, so existence alone proves nothing),
+the result of a round-trip `GetInfo` with a 5s timeout, the path of the imported
+client module, the resolved `audacity.cfg`, the default project sample rate, and
+a `next_steps` list naming the fix for whatever it found.
+
+Run this first when a call fails in a way that might not be about the command
+you sent: no response, an empty response, a timeout, or an export that came out
+at the wrong rate.
 
 ### `project_edit_metadata`
 

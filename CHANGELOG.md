@@ -11,6 +11,10 @@ All notable changes to audacity-mcp-max will be documented in this file.
 - Starting a cleanup pipeline while a transcription was running crashed with `RuntimeError: coroutine raised StopIteration`. The "already running" error scanned only the pipeline job store, so a transcription conflict fell off the end of a bare `next()`. The conflicting job is now identified inside `_create_job` while it still holds the lock, covering both stores and closing the race where the blocking job finishes before the caller re-scans. (#10)
 - A missing FIFO on POSIX reported `PIPE_OPEN_FAILED` with a bare errno string. It now reports `PIPE_NOT_FOUND` with the same "is mod-script-pipe enabled" guidance the Windows path already gave.
 
+### Added
+
+- `audacity_health_check`: one call that answers "is mod-script-pipe actually live right now". Reports each script pipe separately with its age (the files outlive Audacity, so existence proves nothing), whether a round trip answers, which copy of the client is imported, and the default project sample rate — plus the specific next step for whatever it found. The round trip uses a 5s timeout rather than the 30s command timeout, since it is run precisely when nothing is answering. (#15)
+
 ### Changed
 
 - The send retry loop is no longer POSIX-only. `_send_raw` retries on every platform and only `_send_attempt` branches: POSIX reopens per attempt, Windows keeps its named-pipe handles and reopens after a failed one. Windows previously got a single attempt with no retry on an empty or truncated read. The loop itself is now covered by tests that run on any OS; the Win32 primitives underneath it are still unverified on a real Windows install. (#11)

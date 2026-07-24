@@ -58,6 +58,71 @@ def _safe_path(path: str) -> str:
     return resolved
 
 
+def _pipe_state(path: str) -> dict:
+    """Existence and age of one script pipe.
+
+    Age matters because the pipe files outlive Audacity on POSIX — a stale
+    pair from a previous launch looks exactly like a live one.
+    """
+    import time
+
+    state = {"path": path, "exists": os.path.exists(path)}
+    if state["exists"]:
+        try:
+            state["age_seconds"] = round(time.time() - os.stat(path).st_mtime, 1)
+        except OSError:
+            state["age_seconds"] = None
+    return state
+
+
+def _client_module_path() -> str:
+    """Which copy of the client is actually imported.
+
+    A stale install shadowing the checkout looks like a protocol bug, not a
+    packaging one, so it is worth being able to answer in the same call.
+    """
+    import audacity_mcp.audacity_client as module
+
+    return module.__file__
+
+
+def _audacity_cfg_path() -> str | None:
+    """Where Audacity keeps audacity.cfg on this platform, if it is there."""
+    import sys
+
+    home = os.path.expanduser("~")
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", os.path.join(home, "AppData", "Roaming"))
+        candidates = [os.path.join(appdata, "audacity", "audacity.cfg")]
+    elif sys.platform == "darwin":
+        candidates = [os.path.join(home, "Library", "Application Support", "audacity", "audacity.cfg")]
+    else:
+        candidates = [
+            os.path.join(home, ".config", "audacity", "audacity.cfg"),
+            os.path.join(home, ".audacity-data", "audacity.cfg"),
+        ]
+    return next((c for c in candidates if os.path.isfile(c)), None)
+
+
+def _default_project_sample_rate(cfg_path: str | None) -> int | None:
+    """DefaultProjectSampleRate from audacity.cfg.
+
+    An exotic value here is what produces exports at an unexpected rate and
+    Audacity's "Error opening sound device" on playback, both of them far away
+    from the setting that caused them.
+    """
+    if not cfg_path:
+        return None
+    import re
+
+    try:
+        with open(cfg_path, "r", errors="replace") as fh:
+            match = re.search(r"^DefaultProjectSampleRate=(\d+)", fh.read(), re.MULTILINE)
+    except OSError:
+        return None
+    return int(match.group(1)) if match else None
+
+
 def register(mcp: FastMCP):
     from audacity_mcp.main import client
 
@@ -121,6 +186,78 @@ def register(mcp: FastMCP):
         """Get the default folder for exporting audio files.
         Returns the user's Music folder path. Use this when the user doesn't specify where to save."""
         return {"path": _default_music_folder()}
+
+    @mcp.tool()
+    async def audacity_health_check() -> dict:
+        """Check whether Audacity is reachable, and why not if it isn't.
+
+        Run this first when anything fails in a way that might not be about the
+        command you sent: no response, an empty response, a timeout, or an
+        export that came out wrong. Reports both script pipes separately, how
+        old they are, whether a round trip actually answers, which copy of the
+        client is installed, and the default project sample rate — plus what to
+        do about whatever it finds.
+        """
+        from audacity_mcp_shared.constants import COMMON_SAMPLE_RATES, PipePaths, Timeouts
+
+        to_pipe = _pipe_state(PipePaths.TO_SRV)
+        from_pipe = _pipe_state(PipePaths.FROM_SRV)
+
+        round_trip = {"ok": False}
+        if to_pipe["exists"] and from_pipe["exists"]:
+            try:
+                # Type=Tracks is cheap and read-only. Never use Type=Commands
+                # here: it pegs Audacity and takes the app down with it.
+                await client.execute("GetInfo", Type="Tracks", _timeout=Timeouts.HEALTH_CHECK)
+                round_trip["ok"] = True
+            except AudacityMCPError as e:
+                round_trip["error"] = str(e)
+            except Exception as e:  # a non-MCP failure is still a failed round trip
+                round_trip["error"] = f"{type(e).__name__}: {e}"
+
+        cfg_path = _audacity_cfg_path()
+        sample_rate = _default_project_sample_rate(cfg_path)
+
+        next_steps = []
+        if not to_pipe["exists"] and not from_pipe["exists"]:
+            next_steps.append(
+                "Neither script pipe exists. Audacity is not running, or mod-script-pipe "
+                "is not enabled. Enable it under Preferences > Modules, then fully quit "
+                "Audacity (Cmd+Q / File > Exit — closing the window is not enough) and relaunch: "
+                "the pipes are created at launch."
+            )
+        elif not (to_pipe["exists"] and from_pipe["exists"]):
+            missing = "from" if to_pipe["exists"] else "to"
+            next_steps.append(
+                f"Only one pipe is present (the '{missing}' pipe is missing), so mod-script-pipe "
+                "did not fully activate this launch. Fully quit Audacity and relaunch."
+            )
+        elif not round_trip["ok"]:
+            next_steps.append(
+                "Both pipes exist but Audacity did not answer. Either the pipe files are stale "
+                "from a previous launch (check the ages reported here), or Audacity restarted "
+                "while this server was running and the server is holding dead handles. MCP "
+                "servers start with the client session, so that second case is fixed by "
+                "restarting the MCP client, not Audacity."
+            )
+        if sample_rate is not None and sample_rate not in COMMON_SAMPLE_RATES:
+            next_steps.append(
+                f"The default project sample rate is {sample_rate} Hz, which most sound devices "
+                "cannot play. This causes exports at an unexpected rate and Audacity's 'Error "
+                "opening sound device'. Change it in Settings > Audio Settings, or edit "
+                "DefaultProjectSampleRate in audacity.cfg while Audacity is closed — the config "
+                "is rewritten on quit, and the default only applies to new projects."
+            )
+
+        return {
+            "healthy": round_trip["ok"],
+            "pipes": {"to": to_pipe, "from": from_pipe},
+            "round_trip": round_trip,
+            "client_module": _client_module_path(),
+            "config_file": cfg_path,
+            "default_project_sample_rate": sample_rate,
+            "next_steps": next_steps,
+        }
 
     @mcp.tool()
     async def project_export_audio(path: str, num_channels: int = 2) -> dict:

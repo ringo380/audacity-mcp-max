@@ -21,7 +21,7 @@
 
 ---
 
-audacity-mcp-max connects any MCP-compatible AI assistant to [Audacity](https://www.audacityteam.org/), giving it full control over audio editing through 131 tools spanning effects, cleanup, mastering, transcription, and more. Talk to your AI assistant and it edits your audio in real-time.
+audacity-mcp-max connects any MCP-compatible AI assistant to [Audacity](https://www.audacityteam.org/), giving it full control over audio editing through 132 tools spanning effects, cleanup, mastering, transcription, and more. Talk to your AI assistant and it edits your audio in real-time.
 
 **No cloud. No API keys for audio processing. Everything runs locally through Audacity's named pipe interface.**
 
@@ -138,14 +138,14 @@ AI:   select region → reverb effect → export to FLAC
 
 ## Features
 
-### 131 Tools Across 11 Categories
+### 132 Tools Across 11 Categories
 
 | Category | Tools | Highlights |
 |----------|-------|------------|
 | **Effects** | 30 | Reverb, echo, pitch shift, tempo change, EQ, phaser, distortion, paulstretch, HPF/LPF, bass & treble, tremolo, wahwah |
 | **Cleanup & Mastering** | 18 | Noise reduction, compressor, limiter, 9 one-click pipelines, analysis tool |
 | **Editing** | 13 | Cut, copy, paste, split, join, trim, silence, duplicate, undo, redo |
-| **Project** | 12 | New, open, save, import/export (WAV, MP3, FLAC, OGG, AIFF) |
+| **Project** | 13 | New, open, save, import/export (WAV, MP3, FLAC, OGG, AIFF) |
 | **Track** | 15 | Add mono/stereo, remove, set properties, mix & render, mute/solo, pan, volume |
 | **Selection** | 12 | Select all/none/region/tracks, zero crossing, cursor positioning |
 | **Transport** | 7 | Play, stop, pause, record, play region, get position |
@@ -315,6 +315,14 @@ Powered by [faster-whisper](https://github.com/SYSTRAN/faster-whisper) — runs 
 
 ## Troubleshooting
 
+### Start Here: `audacity_health_check`
+
+Ask your assistant to run `audacity_health_check` before debugging anything else.
+It reports whether each script pipe exists, how old the pipe files are (they
+outlive Audacity, so their presence alone proves nothing), whether Audacity
+actually answers a round trip, which copy of the client is installed, and the
+default project sample rate — with the specific next step for whatever it finds.
+
 ### mod-script-pipe Not Enabled
 
 The installer enables this automatically, but if it didn't work (e.g. Audacity was never opened before), enable it manually:
@@ -480,7 +488,7 @@ Your support helps keep this project maintained and free for everyone.
 ## Documentation
 
 - **[Installation Guide](docs/INSTALLATION.md)** — Detailed setup for Windows, macOS, Linux
-- **[Tool Reference](docs/TOOLS.md)** — Complete reference for all 131 tools with parameters and ranges
+- **[Tool Reference](docs/TOOLS.md)** — Complete reference for all 132 tools with parameters and ranges
 - **[Contributing](CONTRIBUTING.md)** — How to add tools and contribute
 - **[Changelog](CHANGELOG.md)** — Version history and release notes
 
