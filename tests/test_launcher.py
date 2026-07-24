@@ -7,12 +7,9 @@ when it gives up has to go to stderr: stdout is the JSON-RPC channel, and an
 English sentence written there corrupts the protocol rather than explaining
 anything.
 """
-import os
 import pathlib
 import subprocess
 import stat
-
-import pytest
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 LAUNCHER = REPO / "scripts" / "launch-mcp.sh"
@@ -31,9 +28,9 @@ def make_fake_uv(directory, record):
     return fake
 
 
-def run_launcher(env, tmp_path):
+def run_launcher(env, tmp_path, args=()):
     return subprocess.run(
-        [str(LAUNCHER)],
+        [str(LAUNCHER), *args],
         capture_output=True,
         text=True,
         env=env,
@@ -122,3 +119,28 @@ class TestLauncher:
         assert proc.returncode == 0, proc.stderr
         # Resolved from the script's own path, not from the cwd the host chose.
         assert str(REPO) in record.read_text()
+
+    def test_passes_its_own_arguments_through_to_the_server(self, tmp_path):
+        # Without this, dropping "$@" from the exec line breaks no test: the
+        # other five all invoke the launcher bare, so a launcher that silently
+        # swallowed every argument would look perfectly healthy.
+        record = tmp_path / "argv.txt"
+        bindir = tmp_path / "bin"
+        make_fake_uv(bindir, record)
+        env = base_env(tmp_path, REPO)
+        env["UV_BIN"] = str(bindir / "uv")
+
+        proc = run_launcher(env, tmp_path, args=["--transcription-check", "extra arg"])
+
+        assert proc.returncode == 0, proc.stderr
+        argv = record.read_text().split("\n")
+        assert argv[:6] == [
+            "run",
+            "--directory",
+            str(REPO),
+            "audacity-mcp-max",
+            "--transcription-check",
+            # A quoted argument containing a space must arrive as one argument,
+            # not two - "$@" rather than $@.
+            "extra arg",
+        ]
