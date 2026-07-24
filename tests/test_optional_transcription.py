@@ -11,6 +11,8 @@ import pytest
 
 from audacity_mcp_shared.error_codes import AudacityMCPError
 
+from tests.conftest import register_tools
+
 PYPROJECT = pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml"
 
 
@@ -71,3 +73,66 @@ def test_the_check_passes_when_the_extra_is_available(monkeypatch):
 
     monkeypatch.setattr(transcription_tools, "_whisper_available", lambda: True)
     transcription_tools._check_whisper_installed()  # must not raise
+
+
+@pytest.fixture
+def registered_tools(mock_client):
+    return register_tools("transcription_tools", mock_client)
+
+
+class TestRuntimePathsSurfaceTheCleanMessage:
+    """_check_whisper_installed has real callers now — these exercise them.
+
+    Both tests below drive the actual tool through its background job, not
+    the helper directly: the bug this guards against was two other call
+    sites each doing their own dependency check, so a test that only calls
+    _check_whisper_installed would keep passing while either site silently
+    reverted to its own stale message.
+    """
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_transcribe_audio_background_job_reports_the_setup_message(
+        self, registered_tools, mock_client, monkeypatch
+    ):
+        from audacity_mcp.tools import transcription_tools
+
+        monkeypatch.setattr(transcription_tools, "_whisper_available", lambda: False)
+
+        tool = registered_tools["transcribe_audio"]
+        result = await tool.fn(model_size="tiny")
+        job_id = result["job_id"]
+
+        # Await the real background task rather than sleeping a guessed
+        # duration — the job start delays a second before doing anything,
+        # and a fixed sleep would be either flaky or needlessly slow.
+        await transcription_tools._jobs[job_id]["_task"]
+
+        job = transcription_tools._jobs[job_id]
+        assert job["status"] == "error"
+        assert "/audacity:setup --transcription" in job["error"]
+        assert 'audacity-mcp-max[transcription]' in job["error"]
+        # The message must read as clean prose, not the exception's
+        # "[VALIDATION_FAILED (3000)] ..." decoration.
+        assert "VALIDATION_FAILED" not in job["error"]
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_transcription_set_model_reports_the_setup_message(
+        self, registered_tools, mock_client, monkeypatch
+    ):
+        from audacity_mcp.tools import transcription_tools
+
+        monkeypatch.setattr(transcription_tools, "_whisper_available", lambda: False)
+
+        tool = registered_tools["transcription_set_model"]
+        result = await tool.fn(model_size="tiny")
+        job_id = result["job_id"]
+
+        await transcription_tools._jobs[job_id]["_task"]
+
+        job = transcription_tools._jobs[job_id]
+        assert job["status"] == "error"
+        assert "/audacity:setup --transcription" in job["error"]
+        assert 'audacity-mcp-max[transcription]' in job["error"]
+        assert "VALIDATION_FAILED" not in job["error"]
+        # Not the raw ModuleNotFoundError _get_model's own import would raise.
+        assert "ModuleNotFoundError" not in job["error"]

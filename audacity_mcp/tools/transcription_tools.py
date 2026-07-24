@@ -249,20 +249,15 @@ def register(mcp: FastMCP):
         temp_path = None
         loop = asyncio.get_running_loop()
         try:
-            # Step 0: Check dependency (run import in thread to avoid blocking event loop)
+            # Step 0: Check dependency (run in thread — the check itself imports
+            # faster_whisper, which blocks the event loop for seconds).
             job["current_step"] = "checking faster-whisper installation"
 
-            def _check_dep():
-                import faster_whisper  # noqa: F401
-                return True
-
             try:
-                await loop.run_in_executor(None, _check_dep)
-            except ImportError:
+                await loop.run_in_executor(None, _check_whisper_installed)
+            except AudacityMCPError as e:
                 job["status"] = "error"
-                job["error"] = ("faster-whisper is not installed. "
-                                "Run: pip install faster-whisper  "
-                                "See Transcription Setup in the installation guide.")
+                job["error"] = e.message
                 return
             job["steps_completed"].append("faster-whisper found")
 
@@ -571,8 +566,18 @@ def register(mcp: FastMCP):
 
         async def _load():
             await asyncio.sleep(0.5)  # yield so FastMCP can send response first
+            loop = asyncio.get_running_loop()
             try:
-                loop = asyncio.get_running_loop()
+                # Same reasoning as _transcribe_background: run in a thread since
+                # this checks by importing faster_whisper, which blocks the loop.
+                # Without this, a missing extra surfaces as a raw ModuleNotFoundError
+                # from _get_model's own import, not the clean setup message.
+                await loop.run_in_executor(None, _check_whisper_installed)
+            except AudacityMCPError as e:
+                job["status"] = "error"
+                job["error"] = e.message
+                return
+            try:
                 await loop.run_in_executor(None, _get_model, model_size)
                 job["status"] = "complete"
                 job["current_step"] = "done"
