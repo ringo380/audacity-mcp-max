@@ -26,7 +26,11 @@ Read the output and note anything that is not in a good state:
   to its path) and restart their MCP client. Stop here; nothing below will work.
 - **`venv built: no`** - normal before the first successful launch. Harmless on
   its own, but combined with a working uv it means the server has not started
-  yet this session.
+  yet this session. Note: on an old-`python3` machine, `plugin_doctor.py` itself
+  re-runs under `uv run`, and `uv run` builds the venv as a side effect of that
+  re-exec - so running this diagnostic can be what makes `venv built` flip to
+  `yes`, not just launching the server. That's expected, not a sign of anything
+  wrong.
 - **`mod-script-pipe: disabled` / `ask` / `absent`** - Audacity will not create
   the pipes. Point the user at `/audacity:setup`.
 - **`mod-script-pipe: no-config`** - no `audacity.cfg` was found at all, meaning
