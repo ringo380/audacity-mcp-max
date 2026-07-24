@@ -301,20 +301,32 @@ class AudacityClient:
         except OSError as e:
             raise AudacityMCPError(ErrorCode.PIPE_READ_FAILED, str(e))
 
-    async def execute(self, command: str, extra_params: dict | None = None, **params) -> dict:
+    async def execute(
+        self,
+        command: str,
+        extra_params: dict | None = None,
+        *,
+        _timeout: float = Timeouts.COMMAND,
+        **params,
+    ) -> dict:
+        """Send one command and parse the reply.
+
+        `_timeout` is underscored so it cannot collide with an Audacity
+        parameter arriving through **params.
+        """
         cmd_str = format_command(command, extra_params=extra_params, **params)
         async with self._lock:
             loop = asyncio.get_event_loop()
             try:
                 raw = await asyncio.wait_for(
                     loop.run_in_executor(None, self._send_raw, cmd_str),
-                    timeout=Timeouts.COMMAND,
+                    timeout=_timeout,
                 )
             except TimeoutError:
                 self._close_pipes()
                 raise AudacityMCPError(
                     ErrorCode.PIPE_TIMEOUT,
-                    f"Command timed out after {Timeouts.COMMAND}s: {command}",
+                    f"Command timed out after {_timeout}s: {command}",
                 )
             except AudacityMCPError:
                 raise
@@ -324,26 +336,10 @@ class AudacityClient:
         return parse_response(raw)
 
     async def execute_long(self, command: str, extra_params: dict | None = None, **params) -> dict:
-        cmd_str = format_command(command, extra_params=extra_params, **params)
-        async with self._lock:
-            loop = asyncio.get_event_loop()
-            try:
-                raw = await asyncio.wait_for(
-                    loop.run_in_executor(None, self._send_raw, cmd_str),
-                    timeout=Timeouts.LONG_COMMAND,
-                )
-            except TimeoutError:
-                self._close_pipes()
-                raise AudacityMCPError(
-                    ErrorCode.PIPE_TIMEOUT,
-                    f"Long command timed out after {Timeouts.LONG_COMMAND}s: {command}",
-                )
-            except AudacityMCPError:
-                raise
-            except Exception as e:
-                self._close_pipes()
-                raise AudacityMCPError(ErrorCode.COMMAND_FAILED, str(e))
-        return parse_response(raw)
+        """Same as execute() with the long timeout, for effects that render audio."""
+        return await self.execute(
+            command, extra_params, _timeout=Timeouts.LONG_COMMAND, **params
+        )
 
     def close_sync(self):
         """Synchronous shutdown, for callers that cannot await — notably atexit."""

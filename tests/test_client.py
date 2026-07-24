@@ -1,9 +1,9 @@
 import os
 import sys
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, AsyncMock, MagicMock
 from audacity_mcp.audacity_client import AudacityClient
-from audacity_mcp_shared.constants import PipePaths
+from audacity_mcp_shared.constants import PipePaths, Timeouts
 from audacity_mcp_shared.error_codes import AudacityMCPError, ErrorCode
 
 
@@ -206,3 +206,24 @@ class TestClientExecute:
             with pytest.raises(AudacityMCPError) as exc_info:
                 await client.execute("Play")
         assert exc_info.value.code == ErrorCode.PIPE_TIMEOUT
+
+    async def test_execute_uses_the_short_timeout(self, client):
+        with patch.object(client, "_send_raw", return_value="BatchCommand finished: OK\n"):
+            with patch("audacity_mcp.audacity_client.asyncio.wait_for", new_callable=AsyncMock) as wait_for:
+                wait_for.return_value = "BatchCommand finished: OK\n"
+                await client.execute("Play")
+        assert wait_for.call_args[1]["timeout"] == Timeouts.COMMAND
+
+    async def test_execute_long_uses_the_long_timeout(self, client):
+        """execute_long is a thin wrapper — this is what keeps it from
+        collapsing into a plain execute() with the short timeout."""
+        with patch.object(client, "_send_raw", return_value="BatchCommand finished: OK\n"):
+            with patch("audacity_mcp.audacity_client.asyncio.wait_for", new_callable=AsyncMock) as wait_for:
+                wait_for.return_value = "BatchCommand finished: OK\n"
+                await client.execute_long("Amplify", Ratio=1.5)
+        assert wait_for.call_args[1]["timeout"] == Timeouts.LONG_COMMAND
+
+    async def test_execute_long_still_formats_its_params(self, client):
+        with patch.object(client, "_send_raw", return_value="BatchCommand finished: OK\n") as send:
+            await client.execute_long("Amplify", Ratio=1.5)
+        assert send.call_args[0][0] == 'Amplify: Ratio=1.5\n'
