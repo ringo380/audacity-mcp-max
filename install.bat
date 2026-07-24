@@ -75,7 +75,7 @@ if defined VIRTUAL_ENV (
     echo.
     echo  WARNING: You are inside a virtual environment.
     echo  audacity-mcp-max should be installed globally so Claude Desktop can find it.
-    echo  Deactivate your venv first, or run: pip install git+https://github.com/ringo380/audacity-mcp-max.git outside of it.
+    echo  Deactivate your venv first, or run: pip install git+https://github.com/robworks-code/audacity-mcp-max.git outside of it.
     echo.
     pause
     exit /b 1
@@ -98,11 +98,11 @@ if %errorlevel% neq 0 (
     )
 )
 python -m pip install --upgrade pip >nul 2>&1
-python -m pip install git+https://github.com/ringo380/audacity-mcp-max.git
+python -m pip install git+https://github.com/robworks-code/audacity-mcp-max.git
 if %errorlevel% neq 0 (
     echo.
     echo  ERROR: pip install failed. Try running as administrator,
-    echo  or run manually: python -m pip install git+https://github.com/ringo380/audacity-mcp-max.git
+    echo  or run manually: python -m pip install git+https://github.com/robworks-code/audacity-mcp-max.git
     echo.
     pause
     exit /b 1
@@ -259,7 +259,7 @@ echo   3. Ask Claude: "Get info about the current Audacity project"
 echo.
 echo  If you see project info, you're all set!
 echo.
-echo  Docs: https://github.com/ringo380/audacity-mcp-max
+echo  Docs: https://github.com/robworks-code/audacity-mcp-max
 echo  ============================================
 echo.
 pause

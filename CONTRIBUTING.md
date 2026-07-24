@@ -5,7 +5,7 @@ Thanks for your interest in contributing! Here's how to get started.
 ## Development Setup
 
 ```bash
-git clone https://github.com/ringo380/audacity-mcp-max.git
+git clone https://github.com/robworks-code/audacity-mcp-max.git
 cd audacity-mcp-max
 pip install -e ".[dev]"
 ```

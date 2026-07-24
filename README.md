@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="License" /></a>
-  <a href="https://github.com/ringo380/audacity-mcp-max/releases"><img src="https://img.shields.io/github/v/release/ringo380/audacity-mcp-max" alt="Release" /></a>
+  <a href="https://github.com/robworks-code/audacity-mcp-max/releases"><img src="https://img.shields.io/github/v/release/robworks-code/audacity-mcp-max" alt="Release" /></a>
   <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-compatible-purple.svg" alt="MCP Compatible" /></a>
 </p>
 
@@ -67,7 +67,7 @@ Without the plugin, get the source first:
 
 **Option B:** Clone with git:
 ```bash
-git clone https://github.com/ringo380/audacity-mcp-max.git
+git clone https://github.com/robworks-code/audacity-mcp-max.git
 ```
 
 ### 2. Run the installer (sets up everything else automatically)
@@ -82,7 +82,7 @@ Open the folder and run:
 <details>
 <summary>Other MCP clients (Cursor, Claude Code, etc.)</summary>
 
-If you're not using Claude Desktop, install manually with `pip install git+https://github.com/ringo380/audacity-mcp-max.git` and add to your client's MCP config:
+If you're not using Claude Desktop, install manually with `pip install git+https://github.com/robworks-code/audacity-mcp-max.git` and add to your client's MCP config:
 
 ```json
 {

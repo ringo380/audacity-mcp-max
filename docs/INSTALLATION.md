@@ -44,7 +44,7 @@ This option handles Steps 2 and 3 for you - skip to [Verify It Works](#verify-it
 - **Windows:** Download [`install.bat`](../install.bat) from the repo → double-click it
 - **macOS / Linux:** Run this in your terminal:
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/ringo380/audacity-mcp-max/main/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/robworks-code/audacity-mcp-max/main/install.sh | bash
   ```
 
 The installer handles Steps 2 and 3 for you — skip to [Verify It Works](#verify-it-works).
@@ -52,7 +52,7 @@ The installer handles Steps 2 and 3 for you — skip to [Verify It Works](#verif
 ### Option C: pip install from GitHub
 
 ```bash
-pip install git+https://github.com/ringo380/audacity-mcp-max.git
+pip install git+https://github.com/robworks-code/audacity-mcp-max.git
 ```
 
 That's it. This gives you the `audacity-mcp-max` command. No git clone needed.
@@ -63,7 +63,7 @@ That's it. This gives you the `audacity-mcp-max` command. No git clone needed.
 <summary>Click to expand</summary>
 
 ```bash
-git clone https://github.com/ringo380/audacity-mcp-max.git
+git clone https://github.com/robworks-code/audacity-mcp-max.git
 cd audacity-mcp-max
 pip install -e .
 ```
@@ -86,7 +86,7 @@ Pick your client below. Each section shows the **complete config file** — copy
 
 **Option A: Installed with pip** (recommended — simplest config)
 
-If you installed via `pip install git+https://github.com/ringo380/audacity-mcp-max.git` or the one-click installer, your config is just:
+If you installed via `pip install git+https://github.com/robworks-code/audacity-mcp-max.git` or the one-click installer, your config is just:
 
 ```json
 {
@@ -226,7 +226,7 @@ The `command` field tells your AI client **what program to run** — it can't be
 
 If you didn't pip install, you need the full Python path in `command` because the AI client needs to know where Python is on your system. The `cwd` tells it where the audacity-mcp-max code lives.
 
-**TL;DR:** Run `pip install git+https://github.com/ringo380/audacity-mcp-max.git` and your config is just `"command": "audacity-mcp-max"` — no paths needed.
+**TL;DR:** Run `pip install git+https://github.com/robworks-code/audacity-mcp-max.git` and your config is just `"command": "audacity-mcp-max"` — no paths needed.
 
 ---
 

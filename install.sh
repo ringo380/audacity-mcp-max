@@ -112,10 +112,10 @@ if ! $PYTHON -m pip --version &> /dev/null; then
 fi
 
 $PYTHON -m pip install --upgrade pip >/dev/null 2>&1
-if ! $PYTHON -m pip install git+https://github.com/ringo380/audacity-mcp-max.git; then
+if ! $PYTHON -m pip install git+https://github.com/robworks-code/audacity-mcp-max.git; then
     echo ""
     echo " ERROR: pip install failed."
-    echo " Try: $PYTHON -m pip install --user git+https://github.com/ringo380/audacity-mcp-max.git"
+    echo " Try: $PYTHON -m pip install --user git+https://github.com/robworks-code/audacity-mcp-max.git"
     echo ""
     exit 1
 fi
@@ -274,6 +274,6 @@ echo "  3. Ask Claude: \"Get info about the current Audacity project\""
 echo ""
 echo " If you see project info, you're all set!"
 echo ""
-echo " Docs: https://github.com/ringo380/audacity-mcp-max"
+echo " Docs: https://github.com/robworks-code/audacity-mcp-max"
 echo " ============================================"
 echo ""
