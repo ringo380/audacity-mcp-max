@@ -24,7 +24,12 @@ class AudioInfo:
     duration: float
 
 
-_FORMATS = {2: ("h", 32768.0), 4: ("f", 1.0)}
+# `wave` refuses IEEE-float WAV (format tag 3) outright, so a 4-byte width that
+# reaches us is always signed int32 PCM - decode it as such rather than
+# reinterpreting the bytes as float32, which read as garbage but succeeded.
+# 32-bit-float exports stay unreadable here until the export path is wired in
+# (Task 7) and can decide whether to sniff the fmt tag.
+_FORMATS = {2: ("h", 32768.0), 4: ("i", 2147483648.0)}
 
 
 def read_audio(
@@ -85,20 +90,36 @@ def _iter_blocks(wf, info: AudioInfo, sw: int, block_frames: int) -> Iterator[li
         wf.close()
 
 
+def _decode_stdlib(raw, frames, channels, fmt_char, max_val):
+    # struct.unpack requires the buffer length to match the format exactly, so
+    # trim any trailing partial-frame bytes first. The numpy backend's
+    # frombuffer(count=...) already ignores them; without this slice a
+    # misaligned read (a corrupt AIFF SSND can produce one) raises struct.error
+    # from the stdlib backend only, so the measurement would succeed or fail
+    # depending on which optional extra is installed.
+    n = frames * channels
+    raw = raw[: n * struct.calcsize(fmt_char)]
+    flat = struct.unpack(f"<{n}{fmt_char}", raw)
+    return [[flat[i] / max_val for i in range(c, len(flat), channels)]
+            for c in range(channels)]
+
+
 if HAVE_NUMPY:
     import numpy as _np
 
-    _DTYPES = {"h": "<i2", "f": "<f4"}
+    _DTYPES = {"h": "<i2", "i": "<i4"}
 
-    def _decode(raw, frames, channels, fmt_char, max_val):
+    def _decode_numpy(raw, frames, channels, fmt_char, max_val):
         flat = _np.frombuffer(raw, dtype=_DTYPES[fmt_char], count=frames * channels)
         arr = flat.astype(_np.float64) / max_val
         # (frames, channels) -> a list of per-channel 1-D views.
         return [_np.ascontiguousarray(arr[c::channels]) for c in range(channels)]
 
 else:
+    _decode_numpy = None
 
-    def _decode(raw, frames, channels, fmt_char, max_val):
-        flat = struct.unpack(f"<{frames * channels}{fmt_char}", raw)
-        return [[flat[i] / max_val for i in range(c, len(flat), channels)]
-                for c in range(channels)]
+
+# Both decoders are always named so the two can be compared directly (see the
+# backend-agreement tests); _iter_blocks reads this module-level name at call
+# time, mirroring metrics._accumulate.
+_decode = _decode_numpy if HAVE_NUMPY else _decode_stdlib
