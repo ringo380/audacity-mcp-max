@@ -2,7 +2,7 @@ import os
 import sys
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
-from audacity_mcp.audacity_client import AudacityClient
+from audacity_mcp.audacity_client import AudacityClient, _DeadlineExceeded
 from audacity_mcp_shared.constants import PipePaths, Timeouts
 from audacity_mcp_shared.error_codes import AudacityMCPError, ErrorCode
 
@@ -169,7 +169,7 @@ class TestSendRetryLoop:
         events = []
         replies = iter(["", "BatchCommand finished: OK\n"])
 
-        def attempt(_cmd):
+        def attempt(_cmd, _deadline=None):
             events.append("attempt")
             return next(replies)
 
@@ -251,6 +251,26 @@ class TestShutdown:
             os.close(relay_read_fd)
 
 
+async def _timeout_budget(client, awaitable) -> float:
+    """Seconds of deadline the send loop was handed for one call.
+
+    The worker enforces the timeout itself, so this — not the argument to any
+    one asyncio call — is where a command's budget actually lands.
+    """
+    import time
+
+    seen = []
+
+    def record(_cmd, deadline=None):
+        seen.append(deadline - time.monotonic())
+        return "BatchCommand finished: OK\n"
+
+    with patch.object(client, "_send_raw", side_effect=record):
+        await awaitable
+    assert len(seen) == 1
+    return seen[0]
+
+
 @pytest.mark.asyncio
 class TestClientExecute:
     async def test_execute_formats_and_sends(self, client):
@@ -267,22 +287,211 @@ class TestClientExecute:
         assert exc_info.value.code == ErrorCode.PIPE_TIMEOUT
 
     async def test_execute_uses_the_short_timeout(self, client):
-        with patch.object(client, "_send_raw", return_value="BatchCommand finished: OK\n"):
-            with patch("audacity_mcp.audacity_client.asyncio.wait_for", new_callable=AsyncMock) as wait_for:
-                wait_for.return_value = "BatchCommand finished: OK\n"
-                await client.execute("Play")
-        assert wait_for.call_args[1]["timeout"] == Timeouts.COMMAND
+        budget = await _timeout_budget(client, client.execute("Play"))
+        assert abs(budget - Timeouts.COMMAND) < 0.5
 
     async def test_execute_long_uses_the_long_timeout(self, client):
         """execute_long is a thin wrapper — this is what keeps it from
         collapsing into a plain execute() with the short timeout."""
-        with patch.object(client, "_send_raw", return_value="BatchCommand finished: OK\n"):
-            with patch("audacity_mcp.audacity_client.asyncio.wait_for", new_callable=AsyncMock) as wait_for:
-                wait_for.return_value = "BatchCommand finished: OK\n"
-                await client.execute_long("Amplify", Ratio=1.5)
-        assert wait_for.call_args[1]["timeout"] == Timeouts.LONG_COMMAND
+        budget = await _timeout_budget(client, client.execute_long("Amplify", Ratio=1.5))
+        assert abs(budget - Timeouts.LONG_COMMAND) < 0.5
 
     async def test_execute_long_still_formats_its_params(self, client):
         with patch.object(client, "_send_raw", return_value="BatchCommand finished: OK\n") as send:
             await client.execute_long("Amplify", Ratio=1.5)
         assert send.call_args[0][0] == 'Amplify: Ratio=1.5\n'
+
+
+class TestSendDeadline:
+    """A thread cannot be cancelled, so the send loop has to stop itself.
+
+    Without this the worker kept retrying long after its caller gave up: a
+    5s health check returned in 5s and the process took 31s to exit (#18).
+    """
+
+    @pytest.fixture(autouse=True)
+    def no_backoff_sleeping(self, monkeypatch):
+        monkeypatch.setattr("time.sleep", lambda _s: None)
+
+    def test_a_passed_deadline_makes_no_attempt_at_all(self, client):
+        import time
+
+        with patch.object(client, "_send_attempt", return_value="") as attempt:
+            with patch.object(client, "_close_pipes"):
+                with pytest.raises(_DeadlineExceeded):
+                    client._send_raw("Play:\n", deadline=time.monotonic() - 1)
+        assert attempt.call_count == 0
+
+    def test_the_loop_stops_when_the_deadline_passes_mid_retry(self, client):
+        import time
+
+        def attempt(_cmd, _deadline=None):
+            _burn(0.06)  # each attempt costs real time, so the deadline arrives
+            return ""
+
+        with patch.object(client, "_send_attempt", side_effect=attempt) as spy:
+            with patch.object(client, "_close_pipes"):
+                with pytest.raises(_DeadlineExceeded):
+                    client._send_raw("Play:\n", deadline=time.monotonic() + 0.15)
+        assert 0 < spy.call_count < client._SEND_ATTEMPTS
+
+    def test_the_backoff_never_sleeps_past_the_deadline(self, client):
+        """The retry backoff grows to 0.3s. Sleeping it out whole is another
+        way for the thread to outlive the caller, so it is clipped."""
+        import time
+
+        wakes = []
+        deadline = time.monotonic() + 0.12
+
+        def attempt(_cmd, _deadline=None):
+            _burn(0.04)
+            return ""
+
+        def record(seconds):
+            wakes.append(time.monotonic() + seconds)
+
+        with patch.object(client, "_send_attempt", side_effect=attempt):
+            with patch.object(client, "_close_pipes"):
+                with patch("time.sleep", record):
+                    with pytest.raises(_DeadlineExceeded):
+                        client._send_raw("Play:\n", deadline=deadline)
+        assert wakes, "the loop never backed off, so this proves nothing"
+        # The tolerance covers the clock moving between the clamp and this
+        # recorder (microseconds). An unclamped backoff overshoots by ~60ms.
+        assert max(wakes) <= deadline + 0.001, "a backoff was set to end past the deadline"
+
+    def test_no_deadline_keeps_the_old_behaviour(self, client, monkeypatch):
+        monkeypatch.setattr(client, "_SEND_ATTEMPTS", 3)
+        with patch.object(client, "_send_attempt", return_value="") as attempt:
+            with patch.object(client, "_close_pipes"):
+                with pytest.raises(AudacityMCPError) as exc_info:
+                    client._send_raw("Play:\n")
+        assert attempt.call_count == 3
+        assert exc_info.value.code == ErrorCode.PIPE_READ_FAILED
+
+    @posix_only
+    def test_the_read_gate_never_waits_past_the_deadline(self, client):
+        import select
+        import time
+
+        make_fifo(PipePaths.FROM_SRV)
+        make_fifo(PipePaths.TO_SRV)
+        relay_read_fd = os.open(PipePaths.TO_SRV, os.O_RDONLY | os.O_NONBLOCK)
+        waits = []
+
+        def spy_select(rlist, wlist, xlist, timeout):
+            waits.append(timeout)
+            return ([], [], [])
+
+        try:
+            client._open_pipes()
+            with patch.object(select, "select", spy_select):
+                with pytest.raises(AudacityMCPError):
+                    client._posix_send_raw("Play:\n", deadline=time.monotonic() + 0.2)
+        finally:
+            client._close_pipes()
+            os.close(relay_read_fd)
+        assert waits and waits[0] <= 0.2, f"read gate waited {waits[0]}s, past the deadline"
+        assert Timeouts.PIPE_READ > 0.2, "the cap has to be shorter than the default to prove anything"
+
+
+def _burn(seconds: float) -> None:
+    """Spend real time. time.sleep is patched out in some of these tests, and
+    the point is to move the monotonic clock, not to yield."""
+    import time as _t
+
+    end = _t.monotonic() + seconds
+    while _t.monotonic() < end:
+        pass
+
+
+@pytest.mark.asyncio
+class TestAbandonedWorker:
+    """The lock is released the moment wait_for gives up, so the next command
+    would otherwise start writing while the abandoned one is still on the
+    pipe, with the event loop closing fds out from under its thread."""
+
+    @pytest.fixture(autouse=True)
+    def quick_grace(self, monkeypatch):
+        monkeypatch.setattr(Timeouts, "WORKER_EXIT", 0.15)
+
+    async def test_a_timed_out_command_leaves_the_fds_to_its_worker(self, client):
+        import threading
+
+        release = threading.Event()
+
+        def slow(_cmd, _deadline=None):
+            release.wait(5)
+            return "BatchCommand finished: OK\n"
+
+        try:
+            with patch.object(client, "_send_raw", side_effect=slow):
+                with patch.object(client, "_close_pipes") as close:
+                    with pytest.raises(AudacityMCPError) as exc_info:
+                        await client.execute("Play", _timeout=0.05)
+            assert exc_info.value.code == ErrorCode.PIPE_TIMEOUT
+            assert close.call_count == 0, "the event loop closed the worker's fds"
+        finally:
+            release.set()
+
+    async def test_the_caller_waits_for_the_worker_to_unwind(self, client):
+        import threading
+
+        started = threading.Event()
+
+        def slow(_cmd, _deadline=None):
+            started.set()
+            _burn(0.15)
+            return "BatchCommand finished: OK\n"
+
+        with patch.object(client, "_send_raw", side_effect=slow):
+            with pytest.raises(AudacityMCPError):
+                await client.execute("Play", _timeout=0.02)
+        assert started.is_set()
+        assert client._abandoned is None, "returned while the worker was still on the pipe"
+
+    async def test_a_worker_that_will_not_stop_blocks_the_next_command(self, client):
+        import threading
+
+        release = threading.Event()
+        calls = []
+
+        def stuck(_cmd, _deadline=None):
+            calls.append(_cmd)
+            release.wait(5)
+            return "BatchCommand finished: OK\n"
+
+        try:
+            with patch.object(client, "_send_raw", side_effect=stuck):
+                with pytest.raises(AudacityMCPError):
+                    await client.execute("Play", _timeout=0.02)
+                assert client._abandoned is not None
+
+                with pytest.raises(AudacityMCPError) as exc_info:
+                    await client.execute("Stop", _timeout=0.02)
+            assert exc_info.value.code == ErrorCode.PIPE_TIMEOUT
+            assert "still running" in exc_info.value.message
+            assert calls == ["Play:\n"], "a second command was sent onto the busy pipe"
+        finally:
+            release.set()
+
+    async def test_a_worker_that_finishes_late_clears_the_way(self, client):
+        import threading
+
+        release = threading.Event()
+        calls = []
+
+        def maybe_stuck(_cmd, _deadline=None):
+            calls.append(_cmd)
+            release.wait(5)
+            return "BatchCommand finished: OK\n"
+
+        with patch.object(client, "_send_raw", side_effect=maybe_stuck):
+            with pytest.raises(AudacityMCPError):
+                await client.execute("Play", _timeout=0.02)
+            assert client._abandoned is not None
+            release.set()
+            result = await client.execute("Stop", _timeout=1.0)
+        assert result["success"] is True
+        assert calls == ["Play:\n", "Stop:\n"]
+        assert client._abandoned is None

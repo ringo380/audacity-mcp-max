@@ -21,6 +21,10 @@ class Timeouts:
     # it must not spend the full command timeout confirming silence.
     HEALTH_CHECK = 5.0
     LONG_COMMAND = 600.0  # 10 minutes — large files (2-3hr podcasts) need this
+    # How long a caller waits for an abandoned send to unwind after its command
+    # timed out. The worker checks the same deadline the caller did, so it is
+    # already on its way out; this only covers the unwinding itself.
+    WORKER_EXIT = 2.0
 
 
 ALLOWED_EXPORT_FORMATS = {"wav", "mp3", "ogg", "flac", "aiff", "mp4"}
