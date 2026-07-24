@@ -111,6 +111,14 @@ class TestAudacityIsRunning:
     def test_false_when_it_does_not(self):
         assert env.audacity_is_running(_run=lambda cmd: FakeProc("/bin/zsh\nnode\n")) is False
 
+    def test_a_posix_comm_containing_spaces_is_not_truncated(self):
+        # `ps -Ao comm=` prints the whole executable path on macOS, and an app
+        # bundle may have a space in its name. Taking the first field the way
+        # the Windows branch has to would leave "/Applications/My" and miss a
+        # running Audacity - which is the failure this whole probe prevents.
+        listing = "/Applications/My Audacity.app/Contents/MacOS/Audacity\n"
+        assert env.audacity_is_running(_run=lambda cmd: FakeProc(listing)) is True
+
     def test_our_own_server_does_not_count_as_audacity(self):
         # The MCP server's own process is named audacity-mcp-max. Matching on a
         # substring would make setup refuse to write its config forever.
@@ -122,3 +130,57 @@ class TestAudacityIsRunning:
             raise OSError("no ps here")
 
         assert env.audacity_is_running(_run=boom) is None
+
+    def test_none_when_the_probe_runs_but_fails(self):
+        # busybox ps rejects -Ao comm=, a locked-down container refuses the
+        # process table: the command exists, exits non-zero, and says nothing.
+        # Reading that as "not running" lets setup write a config Audacity
+        # reverts on quit - the callers treat None as a refusal instead.
+        proc = FakeProc(stdout="", returncode=1)
+        assert env.audacity_is_running(_run=lambda cmd: proc) is None
+
+    def test_a_nonzero_exit_that_still_answered_is_believed(self):
+        # tasklist's filter exits non-zero on some Windows builds while still
+        # printing the matching row. Discarding output we actually have would
+        # turn a plain "yes" into "could not tell".
+        listing = "audacity.exe                  6244 Console                    1     92,116 K\n"
+        proc = FakeProc(stdout=listing, returncode=1)
+        assert env.audacity_is_running(_run=lambda cmd: proc, platform="win32") is True
+
+
+class TestAudacityIsRunningOnWindows:
+    """The Windows branch, which had no test at all.
+
+    tasklist prints a whole row per process, not a bare name, so the POSIX
+    basename comparison never matched and the answer was permanently False -
+    silently reintroducing the revert-on-quit bug this milestone exists to fix.
+    """
+
+    def probe(self, stdout):
+        return env.audacity_is_running(
+            _run=lambda cmd: FakeProc(stdout), platform="win32"
+        )
+
+    def test_true_for_a_real_tasklist_row(self):
+        listing = "audacity.exe                  6244 Console                    1     92,116 K\n"
+        assert self.probe(listing) is True
+
+    def test_false_for_the_no_tasks_banner(self):
+        # What tasklist prints when the filter matches nothing. It is a
+        # sentence, not a row, and must not be mistaken for a process name.
+        banner = "INFO: No tasks are running which match the specified criteria.\n"
+        assert self.probe(banner) is False
+
+    def test_our_own_server_does_not_count_on_windows_either(self):
+        listing = "audacity-mcp-max.exe          6244 Console                    1     92,116 K\n"
+        assert self.probe(listing) is False
+
+    def test_it_asks_tasklist_and_not_ps(self):
+        seen = []
+
+        def record(cmd):
+            seen.append(cmd)
+            return FakeProc("")
+
+        env.audacity_is_running(_run=record, platform="win32")
+        assert seen[0][0] == "tasklist"

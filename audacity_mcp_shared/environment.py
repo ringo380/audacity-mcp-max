@@ -88,7 +88,7 @@ def _default_run(cmd):
     return subprocess.run(cmd, capture_output=True, text=True, timeout=10)
 
 
-def audacity_is_running(_run=None):
+def audacity_is_running(_run=None, platform=None):
     """True, False, or None when the process table could not be read.
 
     Setup needs this before touching audacity.cfg: Audacity rewrites that file
@@ -96,7 +96,9 @@ def audacity_is_running(_run=None):
     the user closes the app - and the edit looks like it worked.
     """
     run = _run or _default_run
-    if sys.platform == "win32":
+    platform = platform or sys.platform
+    windows = platform == "win32"
+    if windows:
         cmd = ["tasklist", "/FI", "IMAGENAME eq audacity.exe", "/NH"]
         names = {"audacity.exe"}
     else:
@@ -106,10 +108,24 @@ def audacity_is_running(_run=None):
         proc = run(cmd)
     except (OSError, subprocess.SubprocessError):
         return None
-    for line in (proc.stdout or "").splitlines():
+    output = proc.stdout or ""
+    if getattr(proc, "returncode", 0) != 0 and not output.strip():
+        # A probe that exists but fails - busybox ps without -Ao comm=, a
+        # container that will not show the process table - said nothing, and
+        # nothing is not "Audacity is closed". Falling through to False here
+        # would let setup write a config Audacity reverts on quit, which is the
+        # exact failure this function exists to prevent.
+        return None
+    for line in output.splitlines():
         entry = line.strip()
         if not entry:
             continue
+        # A tasklist row is "audacity.exe  6244 Console  1  92,116 K", so only
+        # its first field is a name; taking the basename of the whole row never
+        # matched and the answer was always False while Audacity was open. On
+        # POSIX the whole line is the comm, which may contain spaces (an app
+        # bundle with a space in its name), so it is compared intact.
+        entry = entry.split()[0] if windows else entry
         # Compare the basename exactly. A substring test would match this
         # server's own audacity-mcp-max process and never let setup write.
         if os.path.basename(entry).lower() in names:
