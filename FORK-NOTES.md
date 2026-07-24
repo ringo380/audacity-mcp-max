@@ -34,6 +34,17 @@ git fetch upstream
 git merge upstream/main
 ```
 
+## Two identities, one repo
+
+This repo is both a Python distribution and a Claude Code plugin. The plugin
+manifest sits at the root and the MCP server starts via `scripts/launch-mcp.sh`,
+so the plugin's installed directory *is* the Python project. That is deliberate:
+it removes the "which copy is loaded" question entirely, which is what made the
+stale-PyPI-wheel failure above so expensive to diagnose.
+
+`plugin.json` and `pyproject.toml` carry the same version; `scripts/verify.sh`
+fails if they drift.
+
 ## Do not install from PyPI
 
 PyPI `audacity-mcp` is upstream's package, not this one. At 0.1.8 the published

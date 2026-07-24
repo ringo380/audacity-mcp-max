@@ -20,7 +20,22 @@ That's it. The plugin creates named pipes that audacity-mcp-max connects to auto
 
 ## Step 2: Install audacity-mcp-max
 
-### Option A: One-click installer (easiest)
+### Option A: Claude Code plugin (recommended)
+
+```
+/plugin marketplace add robworks-code/robworks-claude-code-plugins
+/plugin install audacity@robworks-claude-code-plugins
+```
+
+Then run `/audacity:setup`. It checks the parts people get wrong - uv,
+mod-script-pipe, whether Audacity needs to be closed before its config can be
+changed - and finishes by verifying a real round trip. Needs
+[uv](https://docs.astral.sh/uv/); no pip step and nothing to add to your MCP
+client config.
+
+This option handles Steps 2 and 3 for you - skip to [Verify It Works](#verify-it-works).
+
+### Option B: One-click installer (easiest)
 
 - **Windows:** Download [`install.bat`](../install.bat) from the repo → double-click it
 - **macOS / Linux:** Run this in your terminal:
@@ -30,7 +45,7 @@ That's it. The plugin creates named pipes that audacity-mcp-max connects to auto
 
 The installer handles Steps 2 and 3 for you — skip to [Verify It Works](#verify-it-works).
 
-### Option B: pip install from GitHub (recommended)
+### Option C: pip install from GitHub
 
 ```bash
 pip install git+https://github.com/ringo380/audacity-mcp-max.git
@@ -38,7 +53,7 @@ pip install git+https://github.com/ringo380/audacity-mcp-max.git
 
 That's it. This gives you the `audacity-mcp-max` command. No git clone needed.
 
-### Option C: From source (for developers)
+### Option D: From source (for developers)
 
 <details>
 <summary>Click to expand</summary>

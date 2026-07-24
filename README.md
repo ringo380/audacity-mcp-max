@@ -42,6 +42,19 @@ audacity-mcp-max works with any AI client that supports the [Model Context Proto
 
 ### 1. Get audacity-mcp-max
 
+**Claude Code plugin (recommended)**
+
+```
+/plugin marketplace add robworks-code/robworks-claude-code-plugins
+/plugin install audacity@robworks-claude-code-plugins
+```
+
+Then run `/audacity:setup`. It checks the parts people get wrong - uv,
+mod-script-pipe, whether Audacity needs to be closed before its config can be
+changed - and finishes by verifying a real round trip. Needs
+[uv](https://docs.astral.sh/uv/); no pip step and nothing to add to your MCP
+client config.
+
 **Option A:** Click the green **Code** button above → **Download ZIP** → extract to a folder
 
 **Option B:** Clone with git:
