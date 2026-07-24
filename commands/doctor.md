@@ -35,6 +35,9 @@ Read the output and note anything that is not in a good state:
   `/audacity:setup`.
 - **`pipe (to)` or `pipe (from)` missing** - Audacity is not running, or was not
   restarted after the module was enabled.
+- **`pipe and config info: unavailable`** - the plugin's own files are broken, so
+  the report could not get far enough to check the pipes. Reinstall the plugin.
+  Nothing else in this report is trustworthy when this appears.
 
 ## Step 2: the server side
 
