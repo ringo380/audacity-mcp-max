@@ -95,7 +95,7 @@ class TestSampleRateReporting:
         cfg = tmp_path / "audacity.cfg"
         cfg.write_text("[/SamplingRate]\nDefaultProjectSampleRate=384000\n")
         monkeypatch.setattr(
-            "audacity_mcp.tools.project_tools._audacity_cfg_path", lambda: str(cfg)
+            "audacity_mcp.tools.project_tools.audacity_cfg_path", lambda: str(cfg)
         )
         result = health(project_tools)
         assert result["default_project_sample_rate"] == 384000
@@ -105,7 +105,7 @@ class TestSampleRateReporting:
         cfg = tmp_path / "audacity.cfg"
         cfg.write_text("[/SamplingRate]\nDefaultProjectSampleRate=44100\n")
         monkeypatch.setattr(
-            "audacity_mcp.tools.project_tools._audacity_cfg_path", lambda: str(cfg)
+            "audacity_mcp.tools.project_tools.audacity_cfg_path", lambda: str(cfg)
         )
         result = health(project_tools)
         assert result["default_project_sample_rate"] == 44100
@@ -113,7 +113,7 @@ class TestSampleRateReporting:
 
     def test_missing_config_is_not_an_error(self, project_tools, monkeypatch):
         monkeypatch.setattr(
-            "audacity_mcp.tools.project_tools._audacity_cfg_path", lambda: None
+            "audacity_mcp.tools.project_tools.audacity_cfg_path", lambda: None
         )
         result = health(project_tools)
         assert result["config_file"] is None

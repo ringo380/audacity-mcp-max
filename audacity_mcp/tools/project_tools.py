@@ -3,6 +3,7 @@ import sys
 from mcp.server.fastmcp import FastMCP
 from audacity_mcp_shared.audio_file import describe
 from audacity_mcp_shared.constants import ALLOWED_EXPORT_FORMATS, COMMON_SAMPLE_RATES
+from audacity_mcp_shared.environment import audacity_cfg_path, default_project_sample_rate
 from audacity_mcp_shared.error_codes import AudacityMCPError, ErrorCode
 from audacity_mcp_shared.pipe_protocol import path_corruption_warning
 
@@ -87,43 +88,6 @@ def _client_module_path() -> str:
     import audacity_mcp.audacity_client as module
 
     return module.__file__
-
-
-def _audacity_cfg_path() -> str | None:
-    """Where Audacity keeps audacity.cfg on this platform, if it is there."""
-    import sys
-
-    home = os.path.expanduser("~")
-    if sys.platform == "win32":
-        appdata = os.environ.get("APPDATA", os.path.join(home, "AppData", "Roaming"))
-        candidates = [os.path.join(appdata, "audacity", "audacity.cfg")]
-    elif sys.platform == "darwin":
-        candidates = [os.path.join(home, "Library", "Application Support", "audacity", "audacity.cfg")]
-    else:
-        candidates = [
-            os.path.join(home, ".config", "audacity", "audacity.cfg"),
-            os.path.join(home, ".audacity-data", "audacity.cfg"),
-        ]
-    return next((c for c in candidates if os.path.isfile(c)), None)
-
-
-def _default_project_sample_rate(cfg_path: str | None) -> int | None:
-    """DefaultProjectSampleRate from audacity.cfg.
-
-    An exotic value here is what produces exports at an unexpected rate and
-    Audacity's "Error opening sound device" on playback, both of them far away
-    from the setting that caused them.
-    """
-    if not cfg_path:
-        return None
-    import re
-
-    try:
-        with open(cfg_path, "r", errors="replace") as fh:
-            match = re.search(r"^DefaultProjectSampleRate=(\d+)", fh.read(), re.MULTILINE)
-    except OSError:
-        return None
-    return int(match.group(1)) if match else None
 
 
 def register(mcp: FastMCP):
@@ -225,8 +189,8 @@ def register(mcp: FastMCP):
             except Exception as e:  # a non-MCP failure is still a failed round trip
                 round_trip["error"] = f"{type(e).__name__}: {e}"
 
-        cfg_path = _audacity_cfg_path()
-        sample_rate = _default_project_sample_rate(cfg_path)
+        cfg_path = audacity_cfg_path()
+        sample_rate = default_project_sample_rate(cfg_path)
 
         next_steps = []
         if not to_pipe["exists"] and not from_pipe["exists"]:
