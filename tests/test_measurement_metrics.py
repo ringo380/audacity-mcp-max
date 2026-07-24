@@ -84,6 +84,40 @@ class TestSilenceGaps:
         assert compute_metrics(p)["silence_gap_count"] == 0
 
 
+class TestClicks:
+    """click_count is returned to callers and routed on, so it needs a positive
+    case. Without one, a threshold compared the wrong way round, an off-by-one
+    in the sample delta, or a backend that never accumulates st.clicks all pass
+    the whole suite - the metric would be reported as 0 forever and read as
+    'no clicks found' rather than 'never looked'."""
+
+    def test_a_single_discontinuity_is_one_click(self, tmp_path):
+        body = constant(0.0, 0.1) + constant(0.9, 0.1)
+        p = write_signal(tmp_path / "click.wav", [body])
+        assert compute_metrics(p)["click_count"] == 1
+
+    def test_a_smooth_signal_has_no_clicks(self, tmp_path):
+        """A 100 Hz sine at 44.1 kHz moves far less than the threshold between
+        adjacent samples, so anything above zero here is the detector firing on
+        ordinary waveform slope."""
+        p = write_signal(tmp_path / "smooth.wav", [sine(100, 0.5, amplitude=0.9)])
+        assert compute_metrics(p)["click_count"] == 0
+
+    def test_both_backends_count_the_same_clicks(self, tmp_path, monkeypatch):
+        from audacity_mcp.measurement import metrics as mod
+        if not mod.HAVE_NUMPY:
+            pytest.skip("only one backend available on this install")
+
+        body = constant(0.0, 0.05) + constant(0.9, 0.05) + constant(-0.9, 0.05)
+        p = write_signal(tmp_path / "two.wav", [body])
+
+        monkeypatch.setattr(mod, "_accumulate", mod._accumulate_numpy)
+        fast = compute_metrics(p)["click_count"]
+        monkeypatch.setattr(mod, "_accumulate", mod._accumulate_stdlib)
+        slow = compute_metrics(p)["click_count"]
+        assert fast == slow == 2
+
+
 class TestStereo:
     def test_measures_across_both_channels(self, tmp_path):
         """Peak must come from whichever channel is louder, not just the left."""
