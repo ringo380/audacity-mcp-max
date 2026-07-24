@@ -273,9 +273,11 @@ class AudacityClient:
     def _send_attempt(self, command_str: str, deadline: float | None = None) -> str:
         """One write-and-read cycle, opening whatever this platform needs first."""
         if sys.platform == "win32":
-            # Named pipes are connection-oriented, so the handles are kept across
-            # commands. _win32_send_raw closes them on failure, which is what makes
-            # the next attempt reopen instead of retrying a dead handle.
+            # Named pipes are connection-oriented and Audacity's Windows relay
+            # serves many commands from one connection (PipeServer.cpp keeps
+            # reading until the client hangs up), so the handles are kept across
+            # commands rather than reopened per command as POSIX needs. Dropping
+            # them after a failed attempt is the retry loop's job, below.
             if self._to_pipe is None or self._from_pipe is None:
                 self._open_pipes()
             return self._win32_send_raw(command_str)
@@ -337,6 +339,10 @@ class AudacityClient:
         )
 
     def _win32_send_raw(self, command_str: str) -> str:
+        # Mirrors _posix_send_raw: write, read, and leave the teardown to the
+        # retry loop. It used to close the handles itself on failure, which was
+        # dead weight — the loop drops them after every unusable attempt anyway,
+        # so no probe scenario could tell the two apart.
         data = command_str.encode("utf-8")
         bytes_written = ctypes.wintypes.DWORD()
         try:
@@ -350,7 +356,6 @@ class AudacityClient:
             if not ok:
                 raise OSError(f"WriteFile failed: Win32 error {ctypes.get_last_error()}")
         except OSError as e:
-            self._close_pipes()
             raise AudacityMCPError(ErrorCode.PIPE_WRITE_FAILED, str(e))
 
         try:
@@ -377,7 +382,6 @@ class AudacityClient:
                     break
             return "".join(response_parts)
         except OSError as e:
-            self._close_pipes()
             raise AudacityMCPError(ErrorCode.PIPE_READ_FAILED, str(e))
 
     def _posix_send_raw(self, command_str: str, deadline: float | None = None) -> str:
