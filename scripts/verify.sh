@@ -32,6 +32,7 @@ run_step() {
 
 run_step "unit tests" "$PYTHON" -m pytest -q
 run_step "tool registration" "$PYTHON" scripts/check_registration.py
+run_step "plugin manifests" "$PYTHON" scripts/check_plugin.py
 run_step "clean import" "$PYTHON" scripts/check_clean_import.py
 
 echo ""

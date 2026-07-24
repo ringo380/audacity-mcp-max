@@ -1,0 +1,20 @@
+{
+  "name": "audacity",
+  "version": "0.3.0",
+  "description": "Drive Audacity from Claude Code - 132 tools across effects, cleanup, mastering, tracks, labels, selection, and transport, plus one-call pipelines for podcast, audiobook, interview, vocal, live, and music mastering, and optional local transcription. Includes a guided /audacity:setup and an /audacity:doctor that answers why a session is not connecting.",
+  "author": {
+    "name": "Ryan Robson and Robworks Software LLC",
+    "url": "https://robworks.info"
+  },
+  "homepage": "https://github.com/ringo380/audacity-mcp-max",
+  "repository": "https://github.com/ringo380/audacity-mcp-max",
+  "license": "Apache-2.0",
+  "keywords": [
+    "audacity",
+    "audio",
+    "mcp",
+    "mastering",
+    "podcast",
+    "transcription"
+  ]
+}

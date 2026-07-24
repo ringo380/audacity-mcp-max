@@ -36,6 +36,3 @@ desktop.ini
 # Whisper models (large, downloaded at runtime)
 *.bin
 *.pt
-
-# Local MCP config (contains user-specific paths)
-.mcp.json
