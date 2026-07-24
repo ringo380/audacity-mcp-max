@@ -50,33 +50,45 @@ tested with Audacity nowhere in the picture.
 
 ```
 audacity_mcp/measurement/
-├── __init__.py    capability probe (HAVE_NUMPY) + describe_capability()
+├── __init__.py    capability probe (HAVE_NUMPY, HAVE_SCIPY) + describe_capability()
 ├── reader.py      block iterator over open_pcm -> float blocks
 ├── metrics.py     peak, RMS, DC, clipping, clicks, silence gaps,
 │                  dynamic range, percentile noise floor
-├── loudness.py    BS.1770-4 gated LUFS + oversampled true peak (numpy only)
+├── loudness.py    BS.1770-4 gated LUFS + oversampled true peak (needs the extra)
 ├── targets.py     named target specs per pipeline
 └── report.py      Measurement, delta(), check_targets(), to_dict()
 ```
 
 `audacity_mcp_shared/` is deliberately untouched. It is stdlib-only so the Win32
-pipe probe can run under a bare embeddable Python, and measurement needs numpy;
+pipe probe can run under a bare embeddable Python, and measurement needs numpy and scipy;
 putting it there would cost that guarantee for no gain.
 
 `reader.py` yields fixed-size blocks of float samples from the existing
 `open_pcm`. Two backends sit behind one interface - numpy when it is present,
-today's struct-unpack loop when it is not - so everything above is written once.
+today's struct-unpack loop when it is not.
+
+`metrics.py` carries the same split, and that is not an optimisation for its own
+sake. Iterating a numpy array element by element in Python is *slower* than
+iterating a list, so a single Python loop above a numpy reader would make the
+optional extra actively worse at this half of the job: measured on this machine,
+a one-hour mono file costs around 70 seconds per pass in the Python loop, and a
+verified pipeline runs two passes. Both accumulators fill the same state object
+and the tests assert the two produce identical answers over one file, so the
+duplication is guarded rather than trusted.
 
 Lifting measurement out also takes about 165 lines off `cleanup_tools.py`, which
 is 1490 lines and by a wide margin the largest module in the repo.
 
-### numpy is an optional extra
+### numpy and scipy are an optional extra
 
 `pyproject.toml` gains a `measurement` extra alongside the existing
-`transcription` one. numpy is imported only inside `loudness.py` and `reader.py`'s
-fast path.
+`transcription` one, holding numpy and scipy. K-weighting is an IIR filter, and
+the recursion cannot be vectorised in numpy alone - a pure-numpy biquad is still
+a per-sample Python loop - so `scipy.signal.sosfilt` is what makes loudness
+viable at real durations. Both imports are confined to `loudness.py` and the fast
+paths in `reader.py` and `metrics.py`.
 
-Without it, metrics still work through the stdlib path. LUFS and true peak read
+Without them, metrics still work through the stdlib path. LUFS and true peak read
 `null` with `"unavailable: install the measurement extra"`, and **any target that
 depends on them reports `unknown`, never `failed`** - an unmeasurable target is
 not a missed one, and reporting it as missed would be exactly the dishonesty this
@@ -114,8 +126,9 @@ target Audacity had just normalised to, and the verification layer would report 
 failure that did not exist. The meter takes the same `dual_mono` flag and
 defaults to matching Audacity.
 
-True peak follows Annex 2: 4x polyphase FIR oversampling, implemented directly
-with numpy rather than adding scipy.
+True peak follows Annex 2: 4x polyphase FIR oversampling, via
+`scipy.signal.resample_poly`, which the extra already carries for the
+K-weighting filter.
 
 ### Validating against external ground truth
 
@@ -134,15 +147,19 @@ client.
 
 ## No-op detection, and its limit
 
-Three mechanisms, in descending order of confidence:
+Two mechanisms:
 
 1. **Reply-level.** `_run_pipeline_step` records each step into `job["steps"]` as
    `{name, ok, reply, noop_reason}`, flagging failures and empty replies.
-2. **Known-silent denylist.** Commands documented to report success while doing
-   nothing - `SetTrackStatus` with `Mute` or `Solo` - are hard-flagged wherever a
-   pipeline uses them.
-3. **Whole-pipeline.** If the entry/exit delta shows nothing moved, the report
+2. **Whole-pipeline.** If the entry/exit delta shows nothing moved, the report
    says so.
+
+A third was planned - a denylist of commands documented to report success while
+doing nothing, `SetTrackStatus` with `Mute` or `Solo` being the known case - and
+was dropped before implementation. No pipeline calls `SetTrackStatus`; it appears
+only in `track_tools.py`, which already handles the problem by reading the track
+back. A denylist here would have been unreachable code with no call site, and a
+rule with nowhere to fire is dead code rather than a guard.
 
 **The limit is stated in the report, not hidden.** With entry and exit
 measurement only, the report can say the pipeline changed nothing; it cannot
