@@ -73,8 +73,13 @@ Only if the user wants local transcription. It is a large download
 (ctranslate2 and onnxruntime), and the Whisper model itself is fetched on first
 use.
 
+Use the `uv:` path Step 1 printed rather than a bare `uv` - the same reason
+that step exists at all is that an MCP host does not necessarily put uv on the
+PATH this command runs with, so `uv sync` can fail here for exactly the user
+the resolved-path lookup was for:
+
 ```bash
-cd "${CLAUDE_PLUGIN_ROOT}" && uv sync --extra transcription
+cd "${CLAUDE_PLUGIN_ROOT}" && "<uv path from Step 1>" sync --extra transcription
 ```
 
 ## Step 5: verify
