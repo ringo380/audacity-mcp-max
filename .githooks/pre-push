@@ -1,0 +1,23 @@
+#!/bin/sh
+# Runs the repo's whole gate before anything leaves this machine.
+#
+# This repo has no CI by design, so this hook is the gate - not a convenience
+# in front of one. It calls scripts/verify.sh rather than duplicating checks,
+# so there is exactly one definition of "passing" to keep current.
+#
+# Enable it once per clone:  git config core.hooksPath .githooks
+# Skip it deliberately:      git push --no-verify
+
+REPO="$(git rev-parse --show-toplevel)" || exit 1
+
+if [ ! -x "$REPO/scripts/verify.sh" ]; then
+    echo "pre-push: $REPO/scripts/verify.sh is missing or not executable." >&2
+    exit 1
+fi
+
+"$REPO/scripts/verify.sh" || {
+    echo "" >&2
+    echo "pre-push: the gate failed, so nothing was pushed." >&2
+    echo "Fix the failures above, or push with --no-verify if you mean to." >&2
+    exit 1
+}
