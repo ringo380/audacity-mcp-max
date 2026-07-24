@@ -68,6 +68,13 @@ pinned. That removes the failure documented in `FORK-NOTES.md`, where a stale
 PyPI wheel shadowed the checkout and presented as a protocol desync rather than
 a packaging problem.
 
+That covers the *code*, but not the dependency graph on its own: `mcp[cli]` is
+constrained as `>=1.0.0`, so without a lockfile `uv sync` could still resolve a
+different `mcp` (and its transitive dependencies) on two machines running the
+same pinned `ref`. `uv.lock` is committed for exactly this reason - it is the
+one file that makes "the code that runs is the code the ref pinned" true for
+dependency versions too, not just for this repository's own source.
+
 ### Versioning
 
 `plugin.json.version` and `pyproject.toml` version are the same number, asserted

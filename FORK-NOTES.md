@@ -45,6 +45,13 @@ stale-PyPI-wheel failure above so expensive to diagnose.
 `plugin.json` and `pyproject.toml` carry the same version; `scripts/verify.sh`
 fails if they drift.
 
+`uv.lock` is committed too, and it is the source of truth for exact dependency
+versions. Pinning the plugin marketplace `ref` only pins this repo's own code -
+`mcp[cli]>=1.0.0` is still a range, so without a committed lockfile `uv sync`
+could resolve a different `mcp` (and everything under it) on two machines that
+installed the same tagged release. Run `uv lock` again and commit the result
+after changing a dependency in `pyproject.toml`.
+
 ## Do not install from PyPI
 
 PyPI `audacity-mcp` is upstream's package, not this one. At 0.1.8 the published
