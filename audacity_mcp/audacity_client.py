@@ -203,6 +203,64 @@ class AudacityClient:
         self._to_pipe = None
         self._from_pipe = None
 
+    def _close_pipes_gracefully(self):
+        """Tear the POSIX pipes down without SIGPIPE-ing the relay (issue #19).
+
+        Audacity's relay (PipeServer.cpp) writes each reply with an
+        unprotected fwrite/fflush to the FROM pipe and does not ignore
+        SIGPIPE, so closing our read end while it is still writing terminates
+        Audacity outright. So: close TO first, which lets the relay's fgets
+        loop reach EOF and stop; then read FROM to EOF, which both waits for
+        the relay to close its own write end and unblocks a relay stuck
+        writing a reply larger than the pipe buffer; only then close FROM.
+
+        Bounded by Timeouts.PIPE_DRAIN. A relay that never closes its end
+        cannot be waited on forever, and on that path we fall back to the hard
+        close and accept the residual risk — but a responsive relay, the
+        common case, is fully covered. Win32 has no FIFO SIGPIPE, so it uses
+        the hard close.
+        """
+        if sys.platform == "win32":
+            self._close_pipes()
+            return
+
+        import os
+        import select
+        import time
+
+        to_fd, from_fd = self._to_pipe, self._from_pipe
+        # Drop the class refs up front so a failure part-way through cannot
+        # leave a half-closed fd reachable by the next command.
+        self._to_pipe = None
+        self._from_pipe = None
+
+        if to_fd is not None:
+            try:
+                os.close(to_fd)  # relay's fgets sees EOF and the loop ends
+            except OSError:
+                pass
+
+        if from_fd is None:
+            return
+        try:
+            deadline = time.monotonic() + Timeouts.PIPE_DRAIN
+            while True:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    break  # relay is not closing its end; give up and hard-close
+                ready, _, _ = select.select([from_fd], [], [], left)
+                if not ready:
+                    break
+                if not os.read(from_fd, 65536):
+                    break  # EOF: the relay closed its write end, safe now
+        except OSError:
+            pass
+        finally:
+            try:
+                os.close(from_fd)
+            except OSError:
+                pass
+
     # Audacity's mod-script-pipe relay (Linux) tears down and reopens BOTH FIFO
     # ends after every command cycle. Even a fresh per-command open races that
     # reopen, so any single attempt succeeds only ~50% of the time (empty read /
@@ -249,14 +307,17 @@ class AudacityClient:
                     # Complete, well-formed response. POSIX still drops its ends;
                     # Windows keeps the connection for the next command.
                     if sys.platform != "win32":
-                        self._close_pipes()
+                        self._close_pipes_gracefully()
                     return raw
                 if raw.strip():
                     last_raw = raw  # non-empty but no terminator: keep as fallback
             # The attempt did not produce a usable reply. Drop both ends on either
             # platform so the next attempt reopens clean rather than retrying a
-            # connection the other side has already given up on.
-            self._close_pipes()
+            # connection the other side has already given up on. We may have
+            # given up mid-reply, so on POSIX this has to be the graceful close
+            # that drains FROM first — a hard close here is exactly what SIGPIPEs
+            # a relay still writing the reply (issue #19).
+            self._close_pipes_gracefully()
             backoff = 0.05 * (attempt + 1)
             left = _time_left(deadline)
             if left is not None:

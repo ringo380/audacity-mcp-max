@@ -16,6 +16,11 @@ class PipePaths:
 class Timeouts:
     PIPE_OPEN = 5.0
     PIPE_READ = 10.0
+    # How long to wait, when tearing a POSIX pipe down, for the relay to close
+    # its own write end before we drop our reader. Closing early SIGPIPEs the
+    # relay and takes Audacity with it (issue #19); a responsive relay hits EOF
+    # in well under a millisecond, so this only bounds a hung one.
+    PIPE_DRAIN = 2.0
     COMMAND = 30.0
     # The health check is what a caller runs when things are already wrong, so
     # it must not spend the full command timeout confirming silence.

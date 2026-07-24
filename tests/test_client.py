@@ -135,7 +135,7 @@ class TestSendRetryLoop:
     def test_retries_until_a_terminated_reply_arrives(self, client):
         replies = ["", "", "BatchCommand finished: OK\n"]
         with patch.object(client, "_send_attempt", side_effect=replies) as attempt:
-            with patch.object(client, "_close_pipes"):
+            with patch.object(client, "_close_pipes_gracefully"):
                 raw = client._send_raw("Play:\n")
         assert raw == "BatchCommand finished: OK\n"
         assert attempt.call_count == 3
@@ -143,7 +143,7 @@ class TestSendRetryLoop:
     def test_stops_at_the_attempt_limit(self, client, monkeypatch):
         monkeypatch.setattr(client, "_SEND_ATTEMPTS", 4)
         with patch.object(client, "_send_attempt", return_value="") as attempt:
-            with patch.object(client, "_close_pipes"):
+            with patch.object(client, "_close_pipes_gracefully"):
                 with pytest.raises(AudacityMCPError) as exc_info:
                     client._send_raw("Play:\n")
         assert attempt.call_count == 4
@@ -152,14 +152,14 @@ class TestSendRetryLoop:
     def test_falls_back_to_an_unterminated_reply(self, client, monkeypatch):
         monkeypatch.setattr(client, "_SEND_ATTEMPTS", 2)
         with patch.object(client, "_send_attempt", side_effect=["partial data", ""]):
-            with patch.object(client, "_close_pipes"):
+            with patch.object(client, "_close_pipes_gracefully"):
                 assert client._send_raw("Play:\n") == "partial data"
 
     def test_reraises_the_last_error_when_every_attempt_failed(self, client, monkeypatch):
         monkeypatch.setattr(client, "_SEND_ATTEMPTS", 2)
         err = AudacityMCPError(ErrorCode.PIPE_WRITE_FAILED, "boom")
         with patch.object(client, "_send_attempt", side_effect=err):
-            with patch.object(client, "_close_pipes"):
+            with patch.object(client, "_close_pipes_gracefully"):
                 with pytest.raises(AudacityMCPError) as exc_info:
                     client._send_raw("Play:\n")
         assert exc_info.value.code == ErrorCode.PIPE_WRITE_FAILED
@@ -174,9 +174,101 @@ class TestSendRetryLoop:
             return next(replies)
 
         with patch.object(client, "_send_attempt", side_effect=attempt):
-            with patch.object(client, "_close_pipes", side_effect=lambda: events.append("close")):
+            with patch.object(client, "_close_pipes_gracefully", side_effect=lambda: events.append("close")):
                 client._send_raw("Play:\n")
         assert events[:3] == ["attempt", "close", "attempt"]
+
+
+class TestGracefulCloseDoesNotSigpipeTheRelay:
+    """Closing FROM while the relay is mid-reply raises SIGPIPE inside the
+    relay, and Audacity does not ignore it, so the app dies (issue #19). The
+    relay stub reproduces that: with the hard close it exits -13, with the
+    graceful drain-to-EOF close it survives. This is the real subprocess, real
+    FIFOs, real client — the only faithful way to test a signal race."""
+
+    @posix_only
+    def test_a_gave_up_command_leaves_the_relay_alive(self, client):
+        import os
+        import subprocess
+        import time
+
+        relay_stub = os.path.join(os.path.dirname(__file__), "relay_stub.py")
+        make_fifo(PipePaths.TO_SRV)
+        make_fifo(PipePaths.FROM_SRV)
+        # Reply in 6 pieces, 150ms apart; the client is given 200ms, so it gives
+        # up around the second piece with four still unwritten — the window the
+        # bug lives in.
+        relay = subprocess.Popen(
+            [sys.executable, relay_stub, PipePaths.TO_SRV, PipePaths.FROM_SRV, "6", "0.15"]
+        )
+        try:
+            # _send_raw raises the internal _DeadlineExceeded on give-up; it is
+            # execute() that maps it to PIPE_TIMEOUT. Either way the command did
+            # not complete — what this test cares about is the relay's fate.
+            with pytest.raises((AudacityMCPError, _DeadlineExceeded)):
+                client._send_raw("Message: Text=hi\n", deadline=time.monotonic() + 0.2)
+            rc = relay.wait(timeout=5)
+        finally:
+            if relay.poll() is None:
+                relay.kill()
+        assert rc != -13, "the relay was killed by SIGPIPE — the graceful close regressed"
+        assert rc == 0, f"relay exited abnormally: {rc}"
+
+    @posix_only
+    def test_a_successful_command_leaves_the_relay_alive(self, client):
+        """The success path closes too. With the terminator arriving early and
+        more pieces still to come, the client returns success while the relay
+        is mid-write — a hard close there SIGPIPEs it just the same."""
+        import os
+        import subprocess
+
+        relay_stub = os.path.join(os.path.dirname(__file__), "relay_stub.py")
+        make_fifo(PipePaths.TO_SRV)
+        make_fifo(PipePaths.FROM_SRV)
+        # 6 pieces, terminator at piece 1: the client succeeds almost at once
+        # and closes while pieces 2-5 are still to be written, 150ms apart.
+        relay = subprocess.Popen(
+            [sys.executable, relay_stub, PipePaths.TO_SRV, PipePaths.FROM_SRV,
+             "6", "0.15", "1"]
+        )
+        try:
+            raw = client._send_raw("Message: Text=hi\n", deadline=None)
+            assert "BatchCommand finished: OK" in raw
+            assert client._to_pipe is None
+            assert client._from_pipe is None
+            rc = relay.wait(timeout=5)
+        finally:
+            if relay.poll() is None:
+                relay.kill()
+        assert rc != -13, "the relay was killed by SIGPIPE on the success path"
+        assert rc == 0, f"relay exited abnormally: {rc}"
+
+    @posix_only
+    def test_the_drain_is_bounded_when_the_relay_never_closes(self, client, monkeypatch):
+        """A relay that keeps its write end open forever must not hang us. The
+        drain gives up after PIPE_DRAIN and hard-closes, accepting the residual
+        SIGPIPE risk on that path — better than blocking the session."""
+        import os
+        import time
+
+        monkeypatch.setattr(Timeouts, "PIPE_DRAIN", 0.3)
+        make_fifo(PipePaths.TO_SRV)
+        make_fifo(PipePaths.FROM_SRV)
+        # A reader/writer pair standing in for a relay that answered and then
+        # went quiet without ever closing its FROM write end.
+        relay_read = os.open(PipePaths.TO_SRV, os.O_RDONLY | os.O_NONBLOCK)
+        relay_write = os.open(PipePaths.FROM_SRV, os.O_RDWR)
+        try:
+            client._open_pipes()
+            started = time.monotonic()
+            client._close_pipes_gracefully()
+            elapsed = time.monotonic() - started
+            assert elapsed < 2.0, f"graceful close blocked for {elapsed}s on a silent relay"
+            assert elapsed >= 0.3, "it did not actually wait out the drain window"
+            assert client._from_pipe is None
+        finally:
+            os.close(relay_read)
+            os.close(relay_write)
 
 
 class TestWin32Pipes:
