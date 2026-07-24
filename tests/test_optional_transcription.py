@@ -6,7 +6,6 @@ base install stays small: a user cleaning up a recording should not pay for
 ctranslate2 and onnxruntime to get there.
 """
 import pathlib
-import re
 
 import pytest
 
@@ -15,22 +14,40 @@ from audacity_mcp_shared.error_codes import AudacityMCPError
 PYPROJECT = pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml"
 
 
-def read_pyproject():
-    return PYPROJECT.read_text()
+def dependency_array(name):
+    """The entries of a `name = [...]` array in pyproject.toml, or None.
+
+    Scanned line by line rather than matched with `\\[(.*?)\\]`: that pattern
+    stops at the `]` inside "mcp[cli]>=1.0.0", so it returns a truncated prefix
+    that cannot contain the requirement under test, and the assertion below
+    passes no matter what pyproject actually declares.
+    """
+    lines = PYPROJECT.read_text().splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() != name + " = [":
+            continue
+        entries = []
+        for entry in lines[index + 1 :]:
+            if entry.strip() == "]":
+                return entries
+            entries.append(entry.strip())
+        raise AssertionError(name + " array is never closed")
+    return None
 
 
 def test_faster_whisper_is_not_a_base_dependency():
-    text = read_pyproject()
-    base = re.search(r"^dependencies = \[(.*?)\]", text, re.MULTILINE | re.DOTALL)
-    assert base, "pyproject has no dependencies array"
-    assert "faster-whisper" not in base.group(1)
+    base = dependency_array("dependencies")
+    assert base is not None, "pyproject has no dependencies array"
+    # Anchors the scan: without it, a parse that found nothing would satisfy
+    # the real assertion for the wrong reason.
+    assert any("mcp[cli]" in entry for entry in base), base
+    assert not any("faster-whisper" in entry for entry in base), base
 
 
 def test_faster_whisper_is_declared_as_the_transcription_extra():
-    text = read_pyproject()
-    extra = re.search(r"^transcription = \[(.*?)\]", text, re.MULTILINE | re.DOTALL)
-    assert extra, "pyproject has no transcription extra"
-    assert "faster-whisper" in extra.group(1)
+    extra = dependency_array("transcription")
+    assert extra is not None, "pyproject has no transcription extra"
+    assert any("faster-whisper" in entry for entry in extra), extra
 
 
 def test_the_missing_dependency_error_names_the_setup_command(monkeypatch):
