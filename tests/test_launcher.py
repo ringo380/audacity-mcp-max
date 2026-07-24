@@ -144,3 +144,71 @@ class TestLauncher:
             # not two - "$@" rather than $@.
             "extra arg",
         ]
+
+    def test_resolves_plugin_root_through_a_symlink_to_the_launcher(self, tmp_path):
+        # A naive `dirname "$0"` reports the SYMLINK's own directory, not the
+        # directory the launcher actually lives in - so a symlinked launcher
+        # would tell uv to run against wherever the symlink happens to sit
+        # rather than the real plugin checkout.
+        record = tmp_path / "argv.txt"
+        bindir = tmp_path / "bin"
+        make_fake_uv(bindir, record)
+
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        linked_launcher = elsewhere / "launch-mcp.sh"
+        linked_launcher.symlink_to(LAUNCHER)
+
+        env = base_env(tmp_path, REPO)
+        env["UV_BIN"] = str(bindir / "uv")
+        del env["CLAUDE_PLUGIN_ROOT"]
+
+        proc = subprocess.run(
+            [str(linked_launcher)],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(tmp_path),
+            timeout=30,
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        argv = record.read_text().split("\n")
+        # The real plugin root (REPO), not `elsewhere` where the symlink lives.
+        assert argv[:3] == ["run", "--directory", str(REPO)]
+
+    def test_refuses_to_run_uv_with_an_empty_directory(self, tmp_path):
+        # If resolving the launcher's own location ever comes out empty (its
+        # cd/pwd fallback fails - here because $0's directory does not exist
+        # at all), the launcher must refuse loudly rather than exec `uv run
+        # --directory "" ...`, which silently runs uv against the caller's cwd
+        # instead of the plugin root.
+        record = tmp_path / "argv.txt"
+        bindir = tmp_path / "bin"
+        make_fake_uv(bindir, record)
+
+        script = LAUNCHER.read_text()
+        env = base_env(tmp_path, REPO)
+        env["UV_BIN"] = str(bindir / "uv")
+        del env["CLAUDE_PLUGIN_ROOT"]
+
+        # `sh -c SCRIPT arg0 ...` runs the launcher's real content unmodified
+        # with $0 set to whatever string we like - no filesystem path needs to
+        # actually exist for a `-c` script, so this cleanly exercises the
+        # fallback's failure path without needing the OS to execute anything
+        # at that bogus location.
+        fake_argv0 = str(tmp_path / "this" / "directory" / "does-not-exist" / "launch-mcp.sh")
+
+        proc = subprocess.run(
+            ["sh", "-c", script, fake_argv0],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(tmp_path),
+            timeout=30,
+        )
+
+        assert proc.returncode != 0
+        assert proc.stdout == ""
+        assert proc.stderr.strip() != ""
+        assert not record.exists(), "must not have run uv at all"

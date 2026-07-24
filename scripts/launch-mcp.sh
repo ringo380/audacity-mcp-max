@@ -14,7 +14,47 @@ set -u
 # launcher usable from a manual invocation or a different MCP host, and it
 # resolves from the script's own location rather than the cwd, which the host
 # chooses and we do not control.
-: "${CLAUDE_PLUGIN_ROOT:=$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)}"
+#
+# `dirname "$0"` alone reports the directory of a SYMLINK to this script, not
+# the directory the script actually lives in, which would point uv at the
+# wrong tree entirely. Resolve symlinks by hand instead (no `readlink -f`,
+# which is not portable to every `readlink` this might run under). The hop
+# count is capped so a symlink cycle - or a chain longer than any real install
+# would ever have - gives up instead of spinning forever.
+_resolve_script_path() {
+    target="$1"
+    hops=0
+    while [ -h "$target" ]; do
+        hops=$((hops + 1))
+        if [ "$hops" -gt 40 ]; then
+            return 1
+        fi
+        link=$(readlink "$target") || return 1
+        case "$link" in
+            /*) target="$link" ;;
+            *) target="$(dirname "$target")/$link" ;;
+        esac
+    done
+    printf '%s\n' "$target"
+}
+
+if [ -z "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+    _resolved_self=$(_resolve_script_path "$0") &&
+        CLAUDE_PLUGIN_ROOT=$(cd "$(dirname "$_resolved_self")/.." 2>/dev/null && pwd)
+fi
+
+# Whatever the source - unset with no usable fallback, or a fallback whose
+# cd/pwd failed - running `uv run --directory ""` would quietly point uv at
+# the caller's own cwd instead of refusing, so check explicitly rather than
+# trusting the substitution above to have produced something.
+if [ -z "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+    echo "[audacity-mcp-max] Could not determine the plugin's own install directory." 1>&2
+    echo "[audacity-mcp-max] This launcher could not resolve its own path (a broken or" 1>&2
+    echo "[audacity-mcp-max] looping symlink, or an install directory that no longer" 1>&2
+    echo "[audacity-mcp-max] exists). Set CLAUDE_PLUGIN_ROOT to the plugin's install" 1>&2
+    echo "[audacity-mcp-max] directory and restart your MCP client." 1>&2
+    exit 1
+fi
 
 # Absolute places uv installs itself. Overridable so the test suite can point
 # the search somewhere controlled instead of depending on what this machine
