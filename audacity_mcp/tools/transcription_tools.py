@@ -249,7 +249,7 @@ def register(mcp: FastMCP):
         temp_path = None
         loop = asyncio.get_running_loop()
         try:
-            # Step 0: Check dependency (run in thread — the check itself imports
+            # Step 0: Check dependency (run in thread - the check itself imports
             # faster_whisper, which blocks the event loop for seconds).
             job["current_step"] = "checking faster-whisper installation"
 

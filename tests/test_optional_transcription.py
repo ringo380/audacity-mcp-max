@@ -81,7 +81,7 @@ def registered_tools(mock_client):
 
 
 class TestRuntimePathsSurfaceTheCleanMessage:
-    """_check_whisper_installed has real callers now — these exercise them.
+    """_check_whisper_installed has real callers now - these exercise them.
 
     Both tests below drive the actual tool through its background job, not
     the helper directly: the bug this guards against was two other call
@@ -103,7 +103,7 @@ class TestRuntimePathsSurfaceTheCleanMessage:
         job_id = result["job_id"]
 
         # Await the real background task rather than sleeping a guessed
-        # duration — the job start delays a second before doing anything,
+        # duration - the job start delays a second before doing anything,
         # and a fixed sleep would be either flaky or needlessly slow.
         await transcription_tools._jobs[job_id]["_task"]
 
