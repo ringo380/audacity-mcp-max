@@ -159,11 +159,21 @@ elif grep -q "mod-script-pipe=1" "$AUD_CFG" 2>/dev/null; then
 else
     # Audacity rewrites audacity.cfg when it quits, so editing it while the app
     # is open reports success on a setting that is reverted at the next quit.
-    if pgrep -x audacity >/dev/null 2>&1 || pgrep -x Audacity >/dev/null 2>&1; then
+    if ! command -v pgrep >/dev/null 2>&1; then
+        # No pgrep (a minimal image without procps). Skipping the write is the
+        # safe direction: guessing "not running" here silently restores the very
+        # bug this guard exists to prevent, and the manual path below always works.
+        echo ""
+        echo "  Cannot tell whether Audacity is running (pgrep is not installed), and"
+        echo "  editing its config while it is open would be undone at the next quit."
+        echo "  Quit Audacity if it is open, then set it by hand:"
+        echo "  Preferences > Modules > mod-script-pipe > Enabled"
+        SKIP_CFG=1
+    elif pgrep -x audacity >/dev/null 2>&1 || pgrep -x Audacity >/dev/null 2>&1; then
         echo ""
         echo "  Audacity is running. It rewrites its config when it quits, so a change"
         echo "  made now would be undone the next time you close it."
-        echo "  Fully quit Audacity, then run this installer again -- or set it by hand:"
+        echo "  Fully quit Audacity, then run this installer again - or set it by hand:"
         echo "  Preferences > Modules > mod-script-pipe > Enabled"
         SKIP_CFG=1
     fi
