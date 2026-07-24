@@ -4,6 +4,7 @@ audacity_health_check answers "can I reach Audacity". This answers "is the
 plugin itself assembled correctly", which the server cannot: it is running
 inside the environment it would be reporting on.
 """
+import contextlib
 import os
 import pathlib
 import subprocess
@@ -14,8 +15,40 @@ DOCTOR = REPO / "scripts" / "plugin_doctor.py"
 LAUNCHER = REPO / "scripts" / "launch-mcp.sh"
 
 sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "scripts"))
+
+import plugin_doctor  # noqa: E402
 
 from tests.test_launcher import base_env, make_fake_uv  # noqa: E402
+
+
+@contextlib.contextmanager
+def exactly_this_environment(env):
+    """Run the body with `env` as the whole environment, then put the real one back.
+
+    monkeypatch.setenv cannot express this: the point is that nothing else is
+    set, so a UV_BIN left over in the developer's shell cannot decide the
+    result and make the two resolvers look like they agree when they do not.
+    """
+    saved = dict(os.environ)
+    os.environ.clear()
+    os.environ.update(env)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+def doctor_find_uv(env):
+    """What the doctor resolves under `env`.
+
+    No importlib.reload: find_uv reads the environment when it is called, not
+    when the module is imported, so a reload would only add the hazard of
+    rebinding a module other tests hold a reference to.
+    """
+    with exactly_this_environment(env):
+        return plugin_doctor.find_uv()
 
 
 def run_doctor(env=None):
@@ -91,21 +124,7 @@ class TestFindUvAgreesWithTheLauncher:
         proc = run_launcher(env, tmp_path)
         assert proc.returncode == 0, proc.stderr
 
-        old_environ = dict(os.environ)
-        os.environ.clear()
-        os.environ.update(env)
-        try:
-            sys.path.insert(0, str(REPO / "scripts"))
-            import plugin_doctor
-            import importlib
-
-            importlib.reload(plugin_doctor)
-            found = plugin_doctor.find_uv()
-        finally:
-            os.environ.clear()
-            os.environ.update(old_environ)
-
-        assert found == str(fake)
+        assert doctor_find_uv(env) == str(fake)
 
     def test_agree_on_a_missing_uv(self, tmp_path):
         env = base_env(tmp_path, REPO)
@@ -113,21 +132,7 @@ class TestFindUvAgreesWithTheLauncher:
         proc = run_launcher(env, tmp_path)
         assert proc.returncode == 127
 
-        old_environ = dict(os.environ)
-        os.environ.clear()
-        os.environ.update(env)
-        try:
-            sys.path.insert(0, str(REPO / "scripts"))
-            import plugin_doctor
-            import importlib
-
-            importlib.reload(plugin_doctor)
-            found = plugin_doctor.find_uv()
-        finally:
-            os.environ.clear()
-            os.environ.update(old_environ)
-
-        assert found is None
+        assert doctor_find_uv(env) is None
 
     def test_agree_that_uv_bin_wins(self, tmp_path):
         chosen_record = tmp_path / "argv-chosen.txt"
@@ -143,18 +148,4 @@ class TestFindUvAgreesWithTheLauncher:
         assert chosen_record.exists()
         assert not ignored_record.exists()
 
-        old_environ = dict(os.environ)
-        os.environ.clear()
-        os.environ.update(env)
-        try:
-            sys.path.insert(0, str(REPO / "scripts"))
-            import plugin_doctor
-            import importlib
-
-            importlib.reload(plugin_doctor)
-            found = plugin_doctor.find_uv()
-        finally:
-            os.environ.clear()
-            os.environ.update(old_environ)
-
-        assert found == str(chosen)
+        assert doctor_find_uv(env) == str(chosen)
