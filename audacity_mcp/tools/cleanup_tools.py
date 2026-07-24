@@ -5,9 +5,9 @@ import struct
 import tempfile
 import time
 import uuid
-import wave
 
 from mcp.server.fastmcp import FastMCP
+from audacity_mcp_shared.audio_file import UnsupportedAudioFile, open_pcm
 from audacity_mcp_shared.error_codes import AudacityMCPError, ErrorCode
 
 # Delay between pipeline steps to let Audacity fully process each effect
@@ -39,6 +39,177 @@ def _cleanup_stale_jobs():
         completed.sort(key=lambda x: x[1].get("started_at", 0))
         for k, _ in completed[:-_MAX_COMPLETED_JOBS]:
             del _jobs[k]
+
+
+def _temp_wav_path() -> str:
+    """Generate a unique temp WAV path to avoid collisions between concurrent instances."""
+    return os.path.join(tempfile.gettempdir(), f"audacity_mcp_analyze_{uuid.uuid4().hex[:8]}.wav")
+
+
+def _measure_wav(wav_path: str) -> dict | None:
+    """Read an exported file and compute comprehensive audio diagnostics.
+
+    Returns a dict with all measurements, or None if there are no frames or
+    the sample width is one this cannot unpack. Raises UnsupportedAudioFile
+    when the export is not readable PCM at all — Audacity writes AIFF into a
+    .wav path often enough that "could not parse audio data" is the wrong
+    thing to tell a caller.
+    """
+    try:
+        with open_pcm(wav_path) as wf:
+            rate = wf.getframerate()
+            n_frames = wf.getnframes()
+            sw = wf.getsampwidth()
+            if n_frames == 0:
+                return None
+
+            if sw == 2:
+                fmt_char = "h"
+                max_val = 32768.0
+            elif sw == 4:
+                fmt_char = "f"
+                max_val = 1.0
+            else:
+                return None
+
+            duration = round(n_frames / rate, 2)
+            chunk_size = rate  # 1-second chunks
+
+            # Accumulators
+            peak_abs = 0.0
+            noise_sum_sq = 0.0
+            noise_count = 0
+            noise_target = min(int(rate * 0.5), n_frames)
+            total_sum = 0.0  # For DC offset
+            total_sum_sq = 0.0  # For overall RMS
+            total_count = 0
+            clipped_samples = 0
+            clip_threshold = max_val * 0.999
+
+            # Click/pop detection — count sudden large jumps between samples
+            click_count = 0
+            click_threshold = max_val * 0.3  # Jump > 30% of full scale = click
+            prev_sample = 0.0
+
+            # Silence gap detection — track runs of very quiet audio
+            silence_threshold = max_val * 0.001  # -60 dB
+            min_gap_samples = int(rate * 0.5)  # Gaps > 0.5s count
+            current_silence_run = 0
+            silence_gaps = []  # List of (start_seconds, duration_seconds)
+
+            # Per-second RMS for dynamic range
+            second_rms_values = []
+            second_sum_sq = 0.0
+            second_count = 0
+
+            frames_read = 0
+            while frames_read < n_frames:
+                n = min(chunk_size, n_frames - frames_read)
+                raw = wf.readframes(n)
+                if len(raw) < n * sw:
+                    break
+                samples = struct.unpack(f"<{n}{fmt_char}", raw)
+
+                for s in samples:
+                    a = abs(s)
+
+                    # Peak
+                    if a > peak_abs:
+                        peak_abs = a
+
+                    # Clipping (consecutive maxed-out samples)
+                    if a >= clip_threshold:
+                        clipped_samples += 1
+
+                    # DC offset + RMS
+                    total_sum += s
+                    total_sum_sq += s * s
+                    total_count += 1
+
+                    # Click detection
+                    delta = abs(s - prev_sample)
+                    if delta > click_threshold and total_count > 1:
+                        click_count += 1
+                    prev_sample = s
+
+                    # Silence gap tracking
+                    if a < silence_threshold:
+                        current_silence_run += 1
+                    else:
+                        if current_silence_run >= min_gap_samples:
+                            gap_start = (frames_read + total_count - current_silence_run) / rate
+                            gap_dur = current_silence_run / rate
+                            silence_gaps.append((round(max(gap_start, 0), 2), round(gap_dur, 2)))
+                        current_silence_run = 0
+
+                    # Per-second RMS
+                    second_sum_sq += s * s
+                    second_count += 1
+                    if second_count >= rate:
+                        rms = math.sqrt(second_sum_sq / second_count) / max_val
+                        if rms > 1e-10:
+                            second_rms_values.append(20 * math.log10(rms))
+                        second_sum_sq = 0.0
+                        second_count = 0
+
+                # Noise floor (first 0.5s)
+                if noise_count < noise_target:
+                    take = min(n, noise_target - noise_count)
+                    for s in samples[:take]:
+                        noise_sum_sq += s * s
+                    noise_count += take
+
+                frames_read += n
+
+            # Final silence gap at end of file
+            if current_silence_run >= min_gap_samples:
+                gap_start = (n_frames - current_silence_run) / rate
+                silence_gaps.append((round(max(gap_start, 0), 2), round(current_silence_run / rate, 2)))
+
+            # Last partial second
+            if second_count > rate * 0.1:
+                rms = math.sqrt(second_sum_sq / second_count) / max_val
+                if rms > 1e-10:
+                    second_rms_values.append(20 * math.log10(rms))
+
+            # Compute results
+            peak_linear = peak_abs / max_val
+            peak_db = round(20 * math.log10(max(peak_linear, 1e-10)), 1)
+
+            noise_db = None
+            if noise_count > 0:
+                rms_linear = math.sqrt(noise_sum_sq / noise_count) / max_val
+                noise_db = round(20 * math.log10(max(rms_linear, 1e-10)), 1)
+
+            overall_rms_db = None
+            if total_count > 0:
+                overall_rms = math.sqrt(total_sum_sq / total_count) / max_val
+                overall_rms_db = round(20 * math.log10(max(overall_rms, 1e-10)), 1)
+
+            dc_offset = round((total_sum / total_count) / max_val, 6) if total_count > 0 else 0.0
+
+            # Dynamic range from per-second RMS values
+            dynamic_range_db = None
+            if len(second_rms_values) >= 2:
+                dynamic_range_db = round(max(second_rms_values) - min(second_rms_values), 1)
+
+            return {
+                "peak_db": peak_db,
+                "noise_floor_db": noise_db,
+                "overall_rms_db": overall_rms_db,
+                "dc_offset": dc_offset,
+                "duration": duration,
+                "sample_rate": rate,
+                "clipped_samples": clipped_samples,
+                "click_count": click_count,
+                "silence_gaps": silence_gaps[:10],  # Cap at 10 to avoid huge output
+                "silence_gap_count": len(silence_gaps),
+                "dynamic_range_db": dynamic_range_db,
+            }
+    except UnsupportedAudioFile:
+        raise
+    except Exception:
+        return None
 
 
 def register(mcp: FastMCP):
@@ -190,9 +361,13 @@ def register(mcp: FastMCP):
             if not os.path.exists(tmp_wav) or os.path.getsize(tmp_wav) < 100:
                 job["steps_failed"].append(f"measurement: WAV export failed (file missing or empty at {tmp_wav})")
                 return None, None
-            measurements = _measure_wav(tmp_wav)
+            try:
+                measurements = _measure_wav(tmp_wav)
+            except UnsupportedAudioFile as e:
+                job["steps_failed"].append(f"measurement: {e}")
+                return None, None
             if measurements is None:
-                job["steps_failed"].append("measurement: WAV exists but could not parse audio data")
+                job["steps_failed"].append("measurement: file exists but holds no readable frames")
                 return None, None
             return measurements["peak_db"], measurements["noise_floor_db"]
         except Exception as e:
@@ -219,11 +394,16 @@ def register(mcp: FastMCP):
         await asyncio.sleep(1.0)  # Extra delay to let prior effects settle
 
         peak_db, noise_db = await _measure_current_audio(job)
-        job["steps_applied"].append(f"measured: peak={peak_db}dB noise={noise_db}dB")
 
         if peak_db is None:
-            job["steps_applied"].append("loudness skipped (measurement failed)")
+            # Not an applied step: the pipeline is finishing without having done
+            # anything about loudness, and the caller cannot tell that apart from
+            # "peaks were already fine" unless it lands in steps_failed, which
+            # surfaces as a warning on the job result.
+            job["steps_failed"].append("loudness skipped: could not measure the audio")
             return
+
+        job["steps_applied"].append(f"measured: peak={peak_db}dB noise={noise_db}dB")
 
         if peak_db > peak_target:
             # Peaks are too hot — bring them DOWN to target (reduce only, never boost)
@@ -546,167 +726,6 @@ def register(mcp: FastMCP):
 
     # ── auto_analyze_audio (synchronous) ──────────────────────────────
 
-    def _temp_wav_path() -> str:
-        """Generate a unique temp WAV path to avoid collisions between concurrent instances."""
-        return os.path.join(tempfile.gettempdir(), f"audacity_mcp_analyze_{uuid.uuid4().hex[:8]}.wav")
-
-    def _measure_wav(wav_path: str) -> dict | None:
-        """Read a WAV file and compute comprehensive audio diagnostics.
-        Returns a dict with all measurements, or None on failure."""
-        try:
-            with wave.open(wav_path, "rb") as wf:
-                rate = wf.getframerate()
-                n_frames = wf.getnframes()
-                sw = wf.getsampwidth()
-                if n_frames == 0:
-                    return None
-
-                if sw == 2:
-                    fmt_char = "h"
-                    max_val = 32768.0
-                elif sw == 4:
-                    fmt_char = "f"
-                    max_val = 1.0
-                else:
-                    return None
-
-                duration = round(n_frames / rate, 2)
-                chunk_size = rate  # 1-second chunks
-
-                # Accumulators
-                peak_abs = 0.0
-                noise_sum_sq = 0.0
-                noise_count = 0
-                noise_target = min(int(rate * 0.5), n_frames)
-                total_sum = 0.0  # For DC offset
-                total_sum_sq = 0.0  # For overall RMS
-                total_count = 0
-                clipped_samples = 0
-                clip_threshold = max_val * 0.999
-
-                # Click/pop detection — count sudden large jumps between samples
-                click_count = 0
-                click_threshold = max_val * 0.3  # Jump > 30% of full scale = click
-                prev_sample = 0.0
-
-                # Silence gap detection — track runs of very quiet audio
-                silence_threshold = max_val * 0.001  # -60 dB
-                min_gap_samples = int(rate * 0.5)  # Gaps > 0.5s count
-                current_silence_run = 0
-                silence_gaps = []  # List of (start_seconds, duration_seconds)
-
-                # Per-second RMS for dynamic range
-                second_rms_values = []
-                second_sum_sq = 0.0
-                second_count = 0
-
-                frames_read = 0
-                while frames_read < n_frames:
-                    n = min(chunk_size, n_frames - frames_read)
-                    raw = wf.readframes(n)
-                    if len(raw) < n * sw:
-                        break
-                    samples = struct.unpack(f"<{n}{fmt_char}", raw)
-
-                    for s in samples:
-                        a = abs(s)
-
-                        # Peak
-                        if a > peak_abs:
-                            peak_abs = a
-
-                        # Clipping (consecutive maxed-out samples)
-                        if a >= clip_threshold:
-                            clipped_samples += 1
-
-                        # DC offset + RMS
-                        total_sum += s
-                        total_sum_sq += s * s
-                        total_count += 1
-
-                        # Click detection
-                        delta = abs(s - prev_sample)
-                        if delta > click_threshold and total_count > 1:
-                            click_count += 1
-                        prev_sample = s
-
-                        # Silence gap tracking
-                        if a < silence_threshold:
-                            current_silence_run += 1
-                        else:
-                            if current_silence_run >= min_gap_samples:
-                                gap_start = (frames_read + total_count - current_silence_run) / rate
-                                gap_dur = current_silence_run / rate
-                                silence_gaps.append((round(max(gap_start, 0), 2), round(gap_dur, 2)))
-                            current_silence_run = 0
-
-                        # Per-second RMS
-                        second_sum_sq += s * s
-                        second_count += 1
-                        if second_count >= rate:
-                            rms = math.sqrt(second_sum_sq / second_count) / max_val
-                            if rms > 1e-10:
-                                second_rms_values.append(20 * math.log10(rms))
-                            second_sum_sq = 0.0
-                            second_count = 0
-
-                    # Noise floor (first 0.5s)
-                    if noise_count < noise_target:
-                        take = min(n, noise_target - noise_count)
-                        for s in samples[:take]:
-                            noise_sum_sq += s * s
-                        noise_count += take
-
-                    frames_read += n
-
-                # Final silence gap at end of file
-                if current_silence_run >= min_gap_samples:
-                    gap_start = (n_frames - current_silence_run) / rate
-                    silence_gaps.append((round(max(gap_start, 0), 2), round(current_silence_run / rate, 2)))
-
-                # Last partial second
-                if second_count > rate * 0.1:
-                    rms = math.sqrt(second_sum_sq / second_count) / max_val
-                    if rms > 1e-10:
-                        second_rms_values.append(20 * math.log10(rms))
-
-                # Compute results
-                peak_linear = peak_abs / max_val
-                peak_db = round(20 * math.log10(max(peak_linear, 1e-10)), 1)
-
-                noise_db = None
-                if noise_count > 0:
-                    rms_linear = math.sqrt(noise_sum_sq / noise_count) / max_val
-                    noise_db = round(20 * math.log10(max(rms_linear, 1e-10)), 1)
-
-                overall_rms_db = None
-                if total_count > 0:
-                    overall_rms = math.sqrt(total_sum_sq / total_count) / max_val
-                    overall_rms_db = round(20 * math.log10(max(overall_rms, 1e-10)), 1)
-
-                dc_offset = round((total_sum / total_count) / max_val, 6) if total_count > 0 else 0.0
-
-                # Dynamic range from per-second RMS values
-                dynamic_range_db = None
-                if len(second_rms_values) >= 2:
-                    dynamic_range_db = round(max(second_rms_values) - min(second_rms_values), 1)
-
-                return {
-                    "peak_db": peak_db,
-                    "noise_floor_db": noise_db,
-                    "overall_rms_db": overall_rms_db,
-                    "dc_offset": dc_offset,
-                    "duration": duration,
-                    "sample_rate": rate,
-                    "clipped_samples": clipped_samples,
-                    "click_count": click_count,
-                    "silence_gaps": silence_gaps[:10],  # Cap at 10 to avoid huge output
-                    "silence_gap_count": len(silence_gaps),
-                    "dynamic_range_db": dynamic_range_db,
-                }
-        except Exception:
-            return None
-
     @mcp.tool()
     async def auto_analyze_audio() -> dict:
         """Analyze the current audio track and recommend the best pipeline to use.
@@ -763,9 +782,16 @@ def register(mcp: FastMCP):
                 if file_size < 100:
                     measurement_error = f"Export2 created a tiny file ({file_size} bytes) — export may have failed"
                 else:
-                    measurements = _measure_wav(tmp_wav)
+                    try:
+                        measurements = _measure_wav(tmp_wav)
+                    except UnsupportedAudioFile as e:
+                        measurements = None
+                        measurement_error = f"export of {file_size} bytes is not readable audio: {e}"
                     if measurements is None:
-                        measurement_error = f"WAV file exists ({file_size} bytes) but could not parse audio data"
+                        if measurement_error is None:
+                            measurement_error = (
+                                f"file exists ({file_size} bytes) but holds no readable frames"
+                            )
                     elif measurements["duration"] and measurements["duration"] > 0:
                         total_duration = measurements["duration"]
         except Exception as e:

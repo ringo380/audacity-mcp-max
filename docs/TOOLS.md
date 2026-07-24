@@ -559,6 +559,17 @@ Export audio to file. Format is inferred from extension.
 |-----------|------|---------|-------------|
 | `path` | str | — | Output path (WAV, MP3, FLAC, OGG, AIFF, MP4, WMA) |
 | `num_channels` | int | 2 | Number of channels |
+| `whole_project` | bool | True | Select all tracks and the whole timeline first |
+
+Audacity's `Export2` exports the *current selection*, which is why
+`whole_project` defaults to True. Set it to False only when you deliberately
+want the selection.
+
+The result carries a `verified` block read back from the file itself
+(`container`, `sample_rate`, `channels`, `duration_seconds`, `bytes`) plus a
+`warnings` list when what landed on disk differs from what was requested — AIFF
+data in a `.wav` path, a channel-count mismatch, an unplayable sample rate
+inherited from the project, or no file at all.
 
 ### `project_export_labels`
 
@@ -570,7 +581,11 @@ Export audio to file. Format is inferred from extension.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `info_type` | str | "Tracks" | Info type to retrieve |
+| `info_type` | str | "Tracks" | One of: Tracks, Clips, Envelopes, Labels, Boxes |
+
+`Commands` is rejected. `GetInfo Type=Commands` pegs Audacity's CPU, never
+answers, and takes the application down with it — with no autosave recovery,
+so unsaved work is lost.
 
 ### `get_default_export_folder`
 
