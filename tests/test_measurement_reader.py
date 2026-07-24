@@ -38,7 +38,9 @@ class TestBlocks:
             assert all(v < 0 for v in block[1])
 
     def test_samples_are_normalised_to_unit_range(self, tmp_path):
-        p = write_signal(tmp_path / "a.wav", [sine(1000, 0.2, amplitude=1.0)], rate=8000)
+        p = write_signal(
+            tmp_path / "a.wav", [sine(1000, 0.2, rate=8000, amplitude=1.0)], rate=8000
+        )
         _, blocks = read_audio(p, block_frames=8000)
         peak = max(abs(v) for b in blocks for v in b[0])
         assert peak == pytest.approx(1.0, abs=0.001)

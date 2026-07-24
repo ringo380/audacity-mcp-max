@@ -27,7 +27,9 @@ class AudioInfo:
 _FORMATS = {2: ("h", 32768.0), 4: ("f", 1.0)}
 
 
-def read_audio(path: str, block_frames: int = 0):
+def read_audio(
+    path: str, block_frames: int = 0
+) -> tuple[AudioInfo, Iterator[list]]:
     """Return (AudioInfo, block iterator).
 
     block_frames defaults to one second, which is also the granularity the
