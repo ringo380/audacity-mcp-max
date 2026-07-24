@@ -42,7 +42,11 @@ audacity-mcp-max works with any AI client that supports the [Model Context Proto
 
 ### 1. Get audacity-mcp-max
 
-**Claude Code plugin (recommended)**
+**Claude Code plugin (recommended - macOS and Linux only)**
+
+> **Windows:** the plugin's launcher is a POSIX shell script and cannot start
+> on Windows. Skip straight to [Step 2](#2-run-the-installer-sets-up-everything-else-automatically)
+> and use `install.bat`.
 
 ```
 /plugin marketplace add robworks-code/robworks-claude-code-plugins
@@ -314,19 +318,14 @@ Powered by [faster-whisper](https://github.com/SYSTRAN/faster-whisper) — runs 
 
 ---
 
-## What's New — v0.1.3
+## What's New - v0.3.0
 
-32 new tools (99 → 131), pipeline tuning fixes, and live-tested against Audacity.
+The server ships as a Claude Code plugin, alongside the existing pip/installer paths.
 
-- **New effects**: Reverse, Invert, Repair, AutoDuck, NotchFilter, VocalReduction, AdjustableFade, StudioFadeOut, CrossfadeClips, CrossfadeTracks, ClipFix, SlidingStretch, Tremolo
-- **New editing**: Split (in place), SplitCut, SplitDelete, Disjoin + renamed old split → `edit_split_new`
-- **New tracks**: StereoToMono, MixAndRenderToNew, MuteAll, UnmuteAll, Resample, AlignEndToEnd, AddLabelTrack
-- **New selection**: CursorToTrackStart/End, CursorToProjectStart/End, SelectCursorToTrackEnd
-- **New project**: EditMetadata, ImportMIDI
-- **New labels**: RegularIntervalLabels
-- **Pipeline fixes**: ACX peak cap -3.0→-3.5dB, live NR 18→12dB, podcast comp 10ms/1s→30ms/200ms, interview release 1s→200ms
-- **Bug fix**: `effect_repair` now uses long timeout (Audacity shows popup on invalid selection)
-- **Validation**: Added missing range checks on AutoDuck, VocalReduction, SlidingStretch, Resample
+- **Claude Code plugin**: install with `/plugin install audacity@robworks-claude-code-plugins`, no pip step and nothing to add to your MCP client config - the launcher resolves `uv` itself and runs the server straight from the plugin's own checkout (macOS and Linux; Windows still uses `install.bat`)
+- **New commands**: `/audacity:setup` walks through uv, mod-script-pipe, and a real round-trip check; `/audacity:doctor` diagnoses a failing connection across both the plugin side and the server side
+- **Transcription is now optional**: `faster-whisper` (and the ctranslate2/onnxruntime it pulls in) moved out of the base install into a `transcription` extra - `pip install "audacity-mcp-max[transcription]"`, or `/audacity:setup --transcription` from the plugin. The 7 transcription tools still register either way; calling one without the extra installed raises a clean error naming the fix
+- **Bug fix**: `install.sh` enabled mod-script-pipe without checking whether Audacity was running - Audacity rewrites its config on quit, so the change was silently reverted the next time the user closed the app, after the installer had already reported success. It now refuses to write while Audacity is running and says why
 
 ---
 

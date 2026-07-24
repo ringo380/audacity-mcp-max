@@ -20,7 +20,11 @@ That's it. The plugin creates named pipes that audacity-mcp-max connects to auto
 
 ## Step 2: Install audacity-mcp-max
 
-### Option A: Claude Code plugin (recommended)
+### Option A: Claude Code plugin (recommended - macOS and Linux only)
+
+> **Windows:** the plugin's launcher is a POSIX shell script and cannot start
+> on Windows. Use [Option B](#option-b-one-click-installer-easiest) with
+> `install.bat` instead.
 
 ```
 /plugin marketplace add robworks-code/robworks-claude-code-plugins
