@@ -6,6 +6,45 @@ from audacity_mcp_shared.constants import COMMON_SAMPLE_RATES, MAX_TRACKS
 def register(mcp: FastMCP):
     from audacity_mcp.main import client
 
+    async def _verify_track_flags(track: int, expected: dict) -> list[str]:
+        """Read the track back and report flags that did not take.
+
+        SetTrackStatus answers "BatchCommand finished: OK" for Mute and Solo and
+        then leaves the flag alone (Audacity 3.7.8). Name on the same command
+        does apply, so the targeting is right and the write is the part that is
+        silently dropped. A caller cannot see that without reading back.
+        """
+        import json
+
+        if not expected:
+            return []
+        try:
+            info = await client.execute("GetInfo", Type="Tracks")
+            tracks = json.loads(info.get("message", "") or "[]")
+        except (AudacityMCPError, ValueError, TypeError, AttributeError):
+            return []
+        if not isinstance(tracks, list) or track >= len(tracks):
+            return []
+        actual = tracks[track]
+        if not isinstance(actual, dict):
+            return []
+        # GetInfo answers with lowercase keys ("mute", "solo") while
+        # SetTrackStatus takes capitalised ones, so match case-insensitively.
+        lowered = {str(k).lower(): v for k, v in actual.items()}
+        ignored = []
+        for flag, wanted in expected.items():
+            if flag.lower() not in lowered:
+                continue
+            if bool(lowered[flag.lower()]) != bool(wanted):
+                ignored.append(flag)
+        if not ignored:
+            return []
+        return [
+            f"Audacity reported success but {' and '.join(ignored)} did not change on track "
+            f"{track}. SetTrackStatus silently ignores these flags; set them in the Audacity "
+            "UI, or use track gain instead of mute."
+        ]
+
     @mcp.tool()
     async def track_add_mono() -> dict:
         """Add a new mono audio track to the project."""
@@ -39,6 +78,10 @@ def register(mcp: FastMCP):
             pan: Track pan (-1.0=left to 1.0=right)
             mute: Mute the track
             solo: Solo the track
+
+        Mute and solo are read back after the write, because Audacity accepts
+        them and does nothing. When that happens the result carries a warning
+        naming the flags that did not change.
         """
         if track < 0 or track >= MAX_TRACKS:
             raise AudacityMCPError(ErrorCode.VALUE_OUT_OF_RANGE, f"Track index must be 0-{MAX_TRACKS - 1}")
@@ -53,11 +96,18 @@ def register(mcp: FastMCP):
             if not -1.0 <= pan <= 1.0:
                 raise AudacityMCPError(ErrorCode.VALUE_OUT_OF_RANGE, "Pan must be -1.0 to 1.0")
             params["Pan"] = pan
+        expected = {}
         if mute is not None:
             params["Mute"] = mute
+            expected["Mute"] = mute
         if solo is not None:
             params["Solo"] = solo
-        return await client.execute("SetTrackStatus", **params)
+            expected["Solo"] = solo
+        result = await client.execute("SetTrackStatus", **params)
+        warnings = await _verify_track_flags(track, expected)
+        if warnings:
+            result["warnings"] = warnings
+        return result
 
     @mcp.tool()
     async def track_get_info() -> dict:
@@ -73,13 +123,22 @@ def register(mcp: FastMCP):
     async def track_mute(track: int, mute: bool = True) -> dict:
         """Mute or unmute a track.
 
+        Audacity 3.7.8 accepts this and does nothing: SetTrackStatus reports
+        success and the mute flag stays where it was. The result is read back
+        and carries a warning when that happens. To actually silence a track,
+        set its gain to the minimum, or ask the user to click Mute.
+
         Args:
             track: Track index (0-based)
             mute: True to mute, False to unmute
         """
         if track < 0 or track >= MAX_TRACKS:
             raise AudacityMCPError(ErrorCode.VALUE_OUT_OF_RANGE, f"Track index must be 0-{MAX_TRACKS - 1}")
-        return await client.execute("SetTrackStatus", Track=track, Mute=mute)
+        result = await client.execute("SetTrackStatus", Track=track, Mute=mute)
+        warnings = await _verify_track_flags(track, {"Mute": mute})
+        if warnings:
+            result["warnings"] = warnings
+        return result
 
     @mcp.tool()
     async def track_select(track: int) -> dict:

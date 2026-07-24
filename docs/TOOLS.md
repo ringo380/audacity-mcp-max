@@ -652,6 +652,12 @@ Mix and render selected tracks into a new track, keeping the originals.
 | `track` | int | — | Track index |
 | `mute` | bool | True | Mute state |
 
+Audacity 3.7.8 accepts this and does nothing: `SetTrackStatus` reports success
+and the mute flag stays where it was. The track is read back afterwards, so the
+result carries a `warnings` entry when the flag did not change. To actually
+silence a track, set its gain to the minimum, or ask the user to click Mute.
+The same applies to `mute`/`solo` on `track_set_properties`.
+
 ### `track_mute_all`
 Mute all tracks in the project.
 
