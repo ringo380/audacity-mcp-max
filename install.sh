@@ -125,6 +125,8 @@ echo "  audacity-mcp-max installed successfully!"
 echo ""
 echo "[3/5] Enabling mod-script-pipe in Audacity..."
 
+SKIP_CFG=0
+
 if [[ "$OSTYPE" == "darwin"* ]]; then
     AUD_CFG="$HOME/Library/Application Support/audacity/audacity.cfg"
 else
@@ -155,35 +157,48 @@ if [ ! -f "$AUD_CFG" ]; then
 elif grep -q "mod-script-pipe=1" "$AUD_CFG" 2>/dev/null; then
     echo "  mod-script-pipe is already enabled - skipping."
 else
-    echo ""
-    echo "  audacity-mcp-max needs mod-script-pipe enabled to control Audacity."
-    read -rp "  Would you like to modify the Audacity config to allow MCP access? (y/n): " ENABLE_PIPE
-    if [[ ! "$ENABLE_PIPE" =~ ^[Yy]$ ]]; then
+    # Audacity rewrites audacity.cfg when it quits, so editing it while the app
+    # is open reports success on a setting that is reverted at the next quit.
+    if pgrep -x audacity >/dev/null 2>&1 || pgrep -x Audacity >/dev/null 2>&1; then
         echo ""
-        echo "  Skipped. You can enable it manually:"
-        if [[ "$OSTYPE" == "darwin"* ]]; then
-            echo "  Audacity > Preferences > Modules > mod-script-pipe > Enabled"
-        else
-            echo "  Edit > Preferences > Modules > mod-script-pipe > Enabled"
-        fi
-    else
-        # Back up Audacity config
-        cp "$AUD_CFG" "$AUD_CFG.bak"
+        echo "  Audacity is running. It rewrites its config when it quits, so a change"
+        echo "  made now would be undone the next time you close it."
+        echo "  Fully quit Audacity, then run this installer again -- or set it by hand:"
+        echo "  Preferences > Modules > mod-script-pipe > Enabled"
+        SKIP_CFG=1
+    fi
 
-        if grep -q "mod-script-pipe=" "$AUD_CFG" 2>/dev/null; then
-            # Replace existing setting
-            sed -i.tmp 's/mod-script-pipe=[02]/mod-script-pipe=1/' "$AUD_CFG"
-            rm -f "$AUD_CFG.tmp"
-        elif grep -q '\[ModulePath\]' "$AUD_CFG" 2>/dev/null; then
-            # Add before [ModulePath] section
-            sed -i.tmp 's/\[ModulePath\]/mod-script-pipe=1\n[ModulePath]/' "$AUD_CFG"
-            rm -f "$AUD_CFG.tmp"
+    if [ "${SKIP_CFG:-0}" != "1" ]; then
+        echo ""
+        echo "  audacity-mcp-max needs mod-script-pipe enabled to control Audacity."
+        read -rp "  Would you like to modify the Audacity config to allow MCP access? (y/n): " ENABLE_PIPE
+        if [[ ! "$ENABLE_PIPE" =~ ^[Yy]$ ]]; then
+            echo ""
+            echo "  Skipped. You can enable it manually:"
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+                echo "  Audacity > Preferences > Modules > mod-script-pipe > Enabled"
+            else
+                echo "  Edit > Preferences > Modules > mod-script-pipe > Enabled"
+            fi
         else
-            # Append to end
-            echo "mod-script-pipe=1" >> "$AUD_CFG"
+            # Back up Audacity config
+            cp "$AUD_CFG" "$AUD_CFG.bak"
+
+            if grep -q "mod-script-pipe=" "$AUD_CFG" 2>/dev/null; then
+                # Replace existing setting
+                sed -i.tmp 's/mod-script-pipe=[02]/mod-script-pipe=1/' "$AUD_CFG"
+                rm -f "$AUD_CFG.tmp"
+            elif grep -q '\[ModulePath\]' "$AUD_CFG" 2>/dev/null; then
+                # Add before [ModulePath] section
+                sed -i.tmp 's/\[ModulePath\]/mod-script-pipe=1\n[ModulePath]/' "$AUD_CFG"
+                rm -f "$AUD_CFG.tmp"
+            else
+                # Append to end
+                echo "mod-script-pipe=1" >> "$AUD_CFG"
+            fi
+            echo "  mod-script-pipe enabled!"
+            echo "  NOTE: Restart Audacity for this to take effect."
         fi
-        echo "  mod-script-pipe enabled!"
-        echo "  NOTE: Restart Audacity for this to take effect."
     fi
 fi
 
