@@ -3,6 +3,7 @@ from mcp.server.fastmcp import FastMCP
 from audacity_mcp_shared.audio_file import describe
 from audacity_mcp_shared.constants import ALLOWED_EXPORT_FORMATS, COMMON_SAMPLE_RATES
 from audacity_mcp_shared.error_codes import AudacityMCPError, ErrorCode
+from audacity_mcp_shared.pipe_protocol import path_corruption_warning
 
 
 _BLOCKED_DIRS = None
@@ -172,7 +173,11 @@ def register(mcp: FastMCP):
             path: Absolute path to the audio file (wav, mp3, ogg, flac, etc.)
         """
         path = _safe_path(path)
-        return await client.execute("Import2", Filename=path)
+        result = await client.execute("Import2", Filename=path)
+        warning = path_corruption_warning(path)
+        if warning:
+            result.setdefault("warnings", []).append(warning)
+        return result
 
     def _default_music_folder() -> str:
         """Get the user's Music folder, works on any system."""
@@ -328,6 +333,9 @@ def register(mcp: FastMCP):
         verified = describe(path)
         result["verified"] = verified
         warnings = []
+        path_warning = path_corruption_warning(path)
+        if path_warning:
+            warnings.append(path_warning)
         if verified["container"] == "unknown" and verified["bytes"] is None:
             warnings.append(f"Audacity reported success but no file was written at {path}.")
         else:

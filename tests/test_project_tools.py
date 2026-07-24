@@ -140,3 +140,36 @@ class TestGetInfoCommandsIsBlocked:
         with pytest.raises(AudacityMCPError) as exc:
             asyncio.run(project_tools["project_get_info"].fn(info_type="Nonsense"))
         assert "Commands" not in str(exc.value)
+
+
+class TestWindowsPathCorruptionWarning:
+    """A path with a backslash-then-n segment (C:\\new) cannot survive
+    Audacity's parser (issue #5). Doubling is still correct; the tools warn so
+    the corruption is not silent."""
+
+    def _fresh_replies(self, mock_client):
+        async def _execute(command, extra_params=None, **params):
+            return {"success": True, "raw": "", "message": "", "data": {}}
+        mock_client.execute.side_effect = _execute
+        mock_client.execute_long.side_effect = _execute
+
+    # The corruption is about a literal backslash-then-n reaching the wire; a
+    # real Windows path (C:\new) is rejected as non-absolute on this POSIX host,
+    # so these use absolute paths whose filename carries the same "\n" sequence.
+    def test_import_warns_on_a_corrupting_path(self, project_tools, mock_client, tmp_path):
+        self._fresh_replies(mock_client)
+        bad = str(tmp_path) + "/hold\\new.wav"  # ...\new -> backslash + n
+        result = asyncio.run(project_tools["project_import_audio"].fn(path=bad))
+        assert any("newline" in w for w in result.get("warnings", []))
+
+    def test_import_does_not_warn_on_a_safe_path(self, project_tools, mock_client, tmp_path):
+        self._fresh_replies(mock_client)
+        safe = str(tmp_path / "New" / "a.wav")
+        result = asyncio.run(project_tools["project_import_audio"].fn(path=safe))
+        assert not any("newline" in w for w in result.get("warnings", []))
+
+    def test_export_warns_on_a_corrupting_path(self, project_tools, mock_client, tmp_path):
+        self._fresh_replies(mock_client)
+        path = str(tmp_path) + "/hold\\new_take.wav"  # ...\new_take -> backslash + n
+        result = asyncio.run(project_tools["project_export_audio"].fn(path=path))
+        assert any("newline" in w for w in result.get("warnings", []))

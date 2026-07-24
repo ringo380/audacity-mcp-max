@@ -21,6 +21,28 @@ def _quote_value(value: str) -> str:
     return value
 
 
+# A backslash followed by a lowercase 'n' in a path (e.g. C:\new) cannot survive
+# Audacity's parameter parser. It runs Unescape, whose "\n" -> newline rule fires
+# before "\\" -> "\", so our correctly-doubled C:\\new is read as backslash +
+# newline. There is no escaping that avoids it - it is an Audacity-side bug
+# (issue #5) - so the only thing to do is warn the caller before the path
+# silently arrives corrupted and the command fails with a confusing not-found.
+_CORRUPTING_BACKSLASH = re.compile(r"\\n")
+
+
+def path_corruption_warning(path: str) -> str | None:
+    """Return a warning if `path` will be mangled by Audacity, else None."""
+    if _CORRUPTING_BACKSLASH.search(path):
+        return (
+            f"The path {path!r} contains a backslash followed by 'n', which "
+            "Audacity's command parser turns into a newline (it unescapes \\n "
+            "before \\\\). The path will arrive corrupted no matter how it is "
+            "escaped; rename the folder or use a forward-slash path if Audacity "
+            "accepts one on your system."
+        )
+    return None
+
+
 def format_command(command: str, extra_params: dict | None = None, **params: str | int | float | bool) -> str:
     _validate_value(command)
     parts = [command + ":"]

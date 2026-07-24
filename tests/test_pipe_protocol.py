@@ -85,19 +85,53 @@ class TestFormatCommandEdgeCases:
         result = format_command("SelectTime", Start=0, End=999999.999)
         assert "End=999999.999" in result
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="issue #5: _quote_value doubles every backslash. Whether Audacity's "
-               "command parser unescapes them is unverified, so the correct assertion "
-               "is not yet known. Remove this marker when #5 is settled.",
-    )
-    def test_windows_path_with_backslashes(self):
+    def test_windows_path_backslashes_are_doubled_which_is_correct(self):
+        r"""Issue #5: doubling every backslash is right, not a bug.
+
+        Audacity parses a parameter value with
+        wxCmdLineParser::ConvertStringToArgs (DOS mode, which never consumes a
+        backslash) and then CommandParameters::Unescape, whose "\\\\" -> "\\"
+        rule is the exact inverse of the doubling. Verified against a live
+        Audacity 3.7.8: the doubled form is what arrives intact; a single
+        backslash arrives corrupted. So the wire must carry the doubled path.
+        """
         result = format_command("Import2", Filename=r"C:\Users\Test\Music\file.wav")
-        assert r"C:\Users\Test\Music\file.wav" in result
+        assert r'Filename="C:\\Users\\Test\\Music\\file.wav"' in result
+
+    def test_unc_path_needs_the_doubling_to_survive(self):
+        r"""The leading \\ of a UNC path is where single-backslash sending
+        visibly loses data: doubled it round-trips, un-doubled it arrives as a
+        single leading backslash (confirmed live)."""
+        result = format_command("Import2", Filename=r"\\server\share\a.wav")
+        assert r'Filename="\\\\server\\share\\a.wav"' in result
+
+    def test_backslash_then_lowercase_n_is_an_unfixable_audacity_bug(self):
+        r"""A path segment beginning with 'n' (e.g. C:\new) cannot survive,
+        no escaping helps. Audacity's Unescape runs "\\n" -> newline BEFORE
+        "\\\\" -> "\\", so the doubled C:\\new is seen as backslash + newline.
+        We still send the correct doubled form; recording the limitation so a
+        future reader does not "fix" the doubling in a doomed attempt to help.
+        Verified live: C:\new round-trips with an embedded newline.
+        """
+        result = format_command("Import2", Filename=r"C:\new\test.wav")
+        # The client's part is still correct - it doubles like everything else.
+        assert r'Filename="C:\\new\\test.wav"' in result
 
     def test_empty_string_param(self):
         result = format_command("SetLabel", Text="")
         assert "Text=" in result
+
+    def test_backslash_n_path_produces_a_warning(self):
+        from audacity_mcp_shared.pipe_protocol import path_corruption_warning
+        assert path_corruption_warning(r"C:\new\a.wav") is not None
+        assert path_corruption_warning(r"C:\music\new_song.wav") is not None  # \n inside
+
+    def test_backslash_capital_n_and_other_paths_do_not_warn(self):
+        from audacity_mcp_shared.pipe_protocol import path_corruption_warning
+        # Capital N survives (Unescape is case-sensitive); no \n anywhere else.
+        assert path_corruption_warning(r"C:\New\a.wav") is None
+        assert path_corruption_warning(r"C:\Users\Test\file.wav") is None
+        assert path_corruption_warning("/Users/me/Music/file.wav") is None
 
     def test_value_with_embedded_quotes(self):
         result = format_command("SetLabel", Text='say "hello"')
