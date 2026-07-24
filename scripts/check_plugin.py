@@ -25,11 +25,14 @@ def main() -> int:
     try:
         plugin = json.loads((REPO / ".claude-plugin" / "plugin.json").read_text())
         mcp = json.loads((REPO / ".mcp.json").read_text())
+        # pyproject belongs in here too: read outside, an unreadable one aborts
+        # with a raw traceback instead of the readable line this script promises
+        # everywhere else.
+        py_version = pyproject_version((REPO / "pyproject.toml").read_text())
     except (OSError, ValueError) as e:
         print(f"ERROR: could not read the plugin manifests: {e}", file=sys.stderr)
         return 1
 
-    py_version = pyproject_version((REPO / "pyproject.toml").read_text())
     print(f"plugin: {plugin.get('name')} {plugin.get('version')}")
     print(f"pyproject version: {py_version}")
     if plugin.get("version") != py_version:
