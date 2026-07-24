@@ -32,6 +32,25 @@ class TestValidation:
         assert ErrorCode.COMMAND_FAILED == 2000
         assert ErrorCode.VALIDATION_FAILED == 3000
 
+    def test_every_error_code_is_raised_somewhere(self):
+        """Five codes had accumulated that nothing ever raised (issue #14).
+
+        Every member has to appear as `ErrorCode.<NAME>` in the shipped
+        packages — its own definition does not count.
+        """
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        sources = [
+            p.read_text()
+            for pkg in ("audacity_mcp", "audacity_mcp_shared")
+            for p in (root / pkg).rglob("*.py")
+            if p.name != "error_codes.py"
+        ]
+        blob = "\n".join(sources)
+        unused = [c.name for c in ErrorCode if f"ErrorCode.{c.name}" not in blob]
+        assert unused == [], f"ErrorCode members nothing raises: {unused}"
+
     def test_audacity_error_message(self):
         err = AudacityMCPError(ErrorCode.PIPE_NOT_FOUND, "not found")
         assert "PIPE_NOT_FOUND" in str(err)
@@ -137,3 +156,24 @@ class TestEffectValidation:
     def test_equalization_accepts_odd_length(self, effect_tools, mock_client):
         asyncio.run(effect_tools["effect_equalization"].fn(length=4001))
         assert mock_client.execute_long.await_args[1]["FilterLength"] == 4001
+
+
+@pytest.fixture
+def track_tools(mock_client):
+    return register_tools("track_tools", mock_client)
+
+
+class TestResampleRateWarning:
+    def test_uncommon_rate_is_flagged(self, track_tools):
+        result = asyncio.run(track_tools["track_resample"].fn(rate=384000))
+        assert "warning" in result
+        assert "384000" in result["warning"]
+
+    def test_common_rate_is_not_flagged(self, track_tools):
+        result = asyncio.run(track_tools["track_resample"].fn(rate=48000))
+        assert "warning" not in result
+
+    def test_out_of_range_rate_still_raises(self, track_tools):
+        with pytest.raises(AudacityMCPError) as exc_info:
+            asyncio.run(track_tools["track_resample"].fn(rate=0))
+        assert exc_info.value.code == ErrorCode.VALUE_OUT_OF_RANGE

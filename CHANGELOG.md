@@ -11,6 +11,12 @@ All notable changes to audacity-mcp-max will be documented in this file.
 - Starting a cleanup pipeline while a transcription was running crashed with `RuntimeError: coroutine raised StopIteration`. The "already running" error scanned only the pipeline job store, so a transcription conflict fell off the end of a bare `next()`. The conflicting job is now identified inside `_create_job` while it still holds the lock, covering both stores and closing the race where the blocking job finishes before the caller re-scans. (#10)
 - A missing FIFO on POSIX reported `PIPE_OPEN_FAILED` with a bare errno string. It now reports `PIPE_NOT_FOUND` with the same "is mod-script-pipe enabled" guidance the Windows path already gave.
 
+### Changed
+
+- `execute_long` is now a thin wrapper around `execute` with the long timeout, instead of a second copy of the same 40 lines. Call sites are unchanged. (#12)
+- Removed constants nothing referenced: `Timeouts.PIPE_WRITE`, and the `PIPE_DISCONNECTED`, `COMMAND_NOT_FOUND`, `COMMAND_TIMEOUT`, `COMMAND_REJECTED` and `MISSING_PARAMETER` error codes. Their numbers are recorded in `ErrorCode`'s docstring so a code that becomes useful later can return at its old value, and a test now fails if a member nothing raises reappears. (#14)
+- `ALLOWED_SAMPLE_RATES` was an unused list that duplicated no check; it is now `COMMON_SAMPLE_RATES` and `track_resample` attaches a warning when the requested rate is outside it. The 1-384000 Hz range check is unchanged, so nothing that worked before is rejected — but the rate that later makes Audacity fail to open the sound device is called out at the point it is set. (#14)
+
 ### Testing
 
 - Repaired the test suite: patch targets still pointed at the pre-rename `server.*` modules, the POSIX pipe tests mocked `builtins.open` while the client had moved to `os.open`, and three "validation" tests asserted tautologies instead of calling anything. (#1)

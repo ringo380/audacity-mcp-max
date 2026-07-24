@@ -1,6 +1,6 @@
 from mcp.server.fastmcp import FastMCP
 from audacity_mcp_shared.error_codes import AudacityMCPError, ErrorCode
-from audacity_mcp_shared.constants import MAX_TRACKS
+from audacity_mcp_shared.constants import COMMON_SAMPLE_RATES, MAX_TRACKS
 
 
 def register(mcp: FastMCP):
@@ -126,7 +126,13 @@ def register(mcp: FastMCP):
         """
         if not 1 <= rate <= 384000:
             raise AudacityMCPError(ErrorCode.VALUE_OUT_OF_RANGE, "rate must be 1-384000 Hz")
-        return await client.execute("Resample", Rate=rate)
+        result = await client.execute("Resample", Rate=rate)
+        if rate not in COMMON_SAMPLE_RATES:
+            result["warning"] = (
+                f"{rate} Hz is not a rate most sound devices can play back. "
+                "If Audacity later reports 'Error opening sound device', this is why."
+            )
+        return result
 
     @mcp.tool()
     async def track_align_end_to_end() -> dict:

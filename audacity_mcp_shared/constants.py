@@ -16,14 +16,17 @@ class PipePaths:
 class Timeouts:
     PIPE_OPEN = 5.0
     PIPE_READ = 10.0
-    PIPE_WRITE = 5.0
     COMMAND = 30.0
     LONG_COMMAND = 600.0  # 10 minutes — large files (2-3hr podcasts) need this
 
 
 ALLOWED_EXPORT_FORMATS = {"wav", "mp3", "ogg", "flac", "aiff", "mp4"}
 
-ALLOWED_SAMPLE_RATES = {8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000}
+# Rates any sound device can be expected to play back. Resampling to something
+# outside this set is allowed — Audacity accepts it — but it is worth flagging,
+# because an exotic project rate is what makes Audacity fail to open the output
+# device at playback time, far away from the call that caused it.
+COMMON_SAMPLE_RATES = {8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000}
 
 MAX_TRACKS = 500
 MAX_LABEL_LENGTH = 1000
