@@ -21,6 +21,40 @@ def write_cfg(tmp_path, body):
     return str(cfg)
 
 
+class TestReport:
+    def test_an_unexpected_failure_prints_one_line_rather_than_a_traceback(
+        self, capsys, monkeypatch
+    ):
+        """Every line of the report reads a file, a process table or a config
+        this script does not own. A traceback at someone who ran a setup
+        command tells them nothing they can act on."""
+        monkeypatch.setattr(
+            audacity_setup, "report", lambda: (_ for _ in ()).throw(OSError("disk gone"))
+        )
+        monkeypatch.setattr(sys, "argv", ["audacity_setup.py"])
+
+        rc = audacity_setup.main()
+
+        captured = capsys.readouterr()
+        assert rc != 0
+        assert "disk gone" in captured.err
+        assert len(captured.err.strip().splitlines()) == 1
+
+    def test_the_transcription_line_comes_from_the_venv_probe(self, monkeypatch):
+        """The extra is installed into the plugin's .venv, not into whatever
+        interpreter is running this. Answering from a local import told a user
+        who had just finished setup step 4 that they had not."""
+        monkeypatch.setattr(
+            audacity_setup, "transcription_state", lambda root: ("installed", "")
+        )
+        assert "transcription extra: installed" in audacity_setup.report()
+
+        monkeypatch.setattr(
+            audacity_setup, "transcription_state", lambda root: ("unknown", "old python")
+        )
+        assert "transcription extra: unknown (old python)" in audacity_setup.report()
+
+
 class TestEnableModule:
     def test_flips_an_existing_disabled_setting(self, tmp_path):
         cfg = write_cfg(tmp_path, "[Module]\nmod-script-pipe=0\nmod-nyq-workbench=0\n")

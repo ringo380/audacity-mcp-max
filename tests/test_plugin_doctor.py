@@ -6,6 +6,7 @@ inside the environment it would be reporting on.
 """
 import builtins
 import contextlib
+import json
 import os
 import pathlib
 import subprocess
@@ -74,10 +75,21 @@ def run_launcher(env, tmp_path, args=()):
     )
 
 
+def manifest_version():
+    """Read the version rather than hardcoding it.
+
+    A literal here fails on the next release for no useful reason. Parity
+    between the manifest and pyproject is guarded in test_plugin_manifests.py,
+    so the only thing worth asserting here is that the doctor reports whatever
+    the manifest says.
+    """
+    return json.loads((REPO / ".claude-plugin" / "plugin.json").read_text())["version"]
+
+
 def test_reports_the_plugin_version_and_exits_zero():
     proc = run_doctor()
     assert proc.returncode == 0, proc.stderr
-    assert "plugin version: 0.3.0" in proc.stdout
+    assert "plugin version: %s" % manifest_version() in proc.stdout
 
 
 def test_reports_uv_as_missing_without_blowing_up(tmp_path):
@@ -129,6 +141,55 @@ def test_pipe_and_config_failure_does_not_break_the_zero_exit_contract(capsys, m
     assert "plugin version:" in captured.out
     assert "uv:" in captured.out
     assert "venv built:" in captured.out
+
+
+class TestUnderAnInterpreterTooOldToImportTheProject:
+    """run_doctor() above launches sys.executable - the modern interpreter
+    pytest is running under - while commands/doctor.md invokes bare python3.
+    That gap is why a doctor that could not import audacity_mcp_shared at all
+    on stock macOS passed every test in this file.
+
+    These drive the degraded branch in-process by making the bootstrap report
+    that it could not upgrade. tests/test_plugin_bootstrap.py covers the
+    bootstrap itself, including against a real old interpreter where the
+    machine has one.
+    """
+
+    NOTE = "python: 3.9.6 is too old - not a broken install"
+
+    def degraded(self, monkeypatch):
+        monkeypatch.setattr(plugin_doctor, "reexec_if_old", lambda *a, **k: self.NOTE)
+
+    def test_it_still_exits_zero_and_reports_what_it_can(self, capsys, monkeypatch):
+        self.degraded(monkeypatch)
+
+        rc = plugin_doctor.main()
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert self.NOTE in out
+        assert "plugin version:" in out
+        assert "uv:" in out
+
+    def test_it_does_not_assert_the_transcription_extra_is_missing(self, capsys, monkeypatch):
+        """The extra lives in the plugin's .venv, and a degraded run cannot
+        reach it. "not installed" would be a guess presented as a fact."""
+        self.degraded(monkeypatch)
+
+        plugin_doctor.main()
+
+        assert "transcription extra: unknown" in capsys.readouterr().out
+
+    def test_the_pipe_line_points_at_the_python_note(self, capsys, monkeypatch):
+        """commands/doctor.md keys its guidance on this prefix, so it has to
+        keep it - but it must not send the user to reinstall the plugin."""
+        self.degraded(monkeypatch)
+
+        plugin_doctor.main()
+
+        out = capsys.readouterr().out
+        assert "pipe and config info: unavailable" in out
+        assert "python line above" in out
 
 
 class TestFindUvAgreesWithTheLauncher:

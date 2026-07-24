@@ -15,6 +15,19 @@ import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "scripts"))
+
+from plugin_bootstrap import reexec_if_old, transcription_state  # noqa: E402
+
+# Step 2 of /audacity:setup runs this as bare python3, which on stock macOS is
+# 3.9.6 - and the very next import needs 3.10. Re-running under the plugin's own
+# venv or under uv is the fix; when neither exists there is nothing this script
+# can do, so it says one readable sentence rather than raising a TypeError out
+# of constants.py at the user.
+_OLD_PYTHON = reexec_if_old(__file__, REPO)
+if _OLD_PYTHON is not None:
+    print(_OLD_PYTHON, file=sys.stderr)
+    sys.exit(3)
 
 from audacity_mcp_shared.constants import COMMON_SAMPLE_RATES, PipePaths  # noqa: E402
 from audacity_mcp_shared.environment import (  # noqa: E402
@@ -97,12 +110,11 @@ def report():
     for label, path in (("to", PipePaths.TO_SRV), ("from", PipePaths.FROM_SRV)):
         lines.append(f"pipe ({label}): {path} {'present' if os.path.exists(path) else 'missing'}")
 
-    try:
-        import faster_whisper  # noqa: F401
-
-        lines.append("transcription extra: installed")
-    except ImportError:
-        lines.append("transcription extra: not installed")
+    state, detail = transcription_state(REPO)
+    if state == "unknown":
+        lines.append("transcription extra: unknown (%s)" % detail)
+    else:
+        lines.append("transcription extra: %s" % ("installed" if state == "installed" else "not installed"))
     return lines
 
 
@@ -115,7 +127,17 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    for line in report():
+    try:
+        lines = report()
+    except Exception as exc:
+        # Broad on purpose, for the same reason the doctor's pipe section is:
+        # every line of the report reads a file, a process table or a config
+        # this script does not own, and a traceback at a user who ran a setup
+        # command tells them nothing they can act on.
+        print("could not read the environment: %s: %s" % (type(exc).__name__, exc), file=sys.stderr)
+        return 4
+
+    for line in lines:
         print(line)
 
     if not args.enable_module:

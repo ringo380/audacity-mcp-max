@@ -35,9 +35,18 @@ Read the output and note anything that is not in a good state:
   `/audacity:setup`.
 - **`pipe (to)` or `pipe (from)` missing** - Audacity is not running, or was not
   restarted after the module was enabled.
-- **`pipe and config info: unavailable`** - the plugin's own files are broken, so
-  the report could not get far enough to check the pipes. Reinstall the plugin.
-  Nothing else in this report is trustworthy when this appears.
+- **`python: ... is too old`** - `python3` on this machine is older than 3.10
+  (stock macOS still ships 3.9), and there was no plugin venv and no uv to
+  re-run under. The install is fine; the interpreter is not. Tell the user to
+  install uv from https://docs.astral.sh/uv/ - that also fixes `uv: not found`
+  above, and the server needs it anyway. Everything below this line in the
+  report will say `unknown` or `unavailable`, so treat none of it as a finding.
+- **`pipe and config info: unavailable`** - the report could not get far enough
+  to check the pipes, and nothing below it is trustworthy. Two causes, and the
+  detail in the parentheses says which:
+  - `(see the python line above)` - the old-interpreter case above. Fix that,
+    not the install.
+  - anything else - the plugin's own files are broken. Reinstall the plugin.
 
 ## Step 2: the server side
 

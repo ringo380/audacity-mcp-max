@@ -12,43 +12,28 @@ as a broken diagnostic.
 import json
 import os
 import pathlib
-import shutil
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
-UV_INSTALL_URL = "https://docs.astral.sh/uv/"
+sys.path.insert(0, str(REPO / "scripts"))
 
-
-def find_uv():
-    """The same resolution order as scripts/launch-mcp.sh.
-
-    Duplicated here on purpose: the launcher cannot shell out to Python to
-    find the thing that starts Python, so this logic has to exist twice. The
-    agreement tests in tests/test_plugin_doctor.py exist precisely to catch
-    the two copies drifting apart.
-    """
-    explicit = os.environ.get("UV_BIN")
-    if explicit and os.access(explicit, os.X_OK):
-        return explicit
-    found = shutil.which("uv")
-    if found:
-        return found
-    home = os.path.expanduser("~")
-    default_search = ":".join(
-        [
-            os.path.join(home, ".local", "bin", "uv"),
-            os.path.join(home, ".cargo", "bin", "uv"),
-            "/opt/homebrew/bin/uv",
-            "/usr/local/bin/uv",
-        ]
-    )
-    for candidate in os.environ.get("AUDACITY_MCP_UV_SEARCH", default_search).split(":"):
-        if candidate and os.access(candidate, os.X_OK):
-            return candidate
-    return None
+from plugin_bootstrap import (  # noqa: E402
+    UV_INSTALL_URL,
+    find_uv,
+    reexec_if_old,
+    transcription_state,
+)
 
 
 def main() -> int:
+    # Before anything else, because /audacity:doctor invokes this as bare
+    # python3 and on stock macOS that is 3.9.6, which cannot import
+    # audacity_mcp_shared at all. Returns a line to print when it cannot find
+    # anything better; the report continues either way.
+    old_python = reexec_if_old(__file__, REPO)
+    if old_python:
+        print(old_python)
+
     try:
         plugin = json.loads((REPO / ".claude-plugin" / "plugin.json").read_text())
         print(f"plugin version: {plugin.get('version')}")
@@ -66,12 +51,20 @@ def main() -> int:
     venv = REPO / ".venv"
     print(f"venv built: {'yes' if venv.is_dir() else 'no (first launch will build it)'}")
 
-    try:
-        import faster_whisper  # noqa: F401
-
+    state, detail = transcription_state(REPO, degraded=old_python)
+    if state == "installed":
         print("transcription extra: installed")
-    except ImportError:
+    elif state == "missing":
         print("transcription extra: not installed (/audacity:setup --transcription)")
+    else:
+        print("transcription extra: unknown (%s)" % detail)
+
+    if old_python:
+        # audacity_mcp_shared uses 3.10 syntax, so there is nothing below this
+        # that a 3.9 can reach. Say so with the same prefix the healthy failure
+        # uses, since commands/doctor.md keys its guidance on that line.
+        print("pipe and config info: unavailable (see the python line above)")
+        return 0
 
     try:
         sys.path.insert(0, str(REPO))
