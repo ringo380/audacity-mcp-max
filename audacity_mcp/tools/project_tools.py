@@ -1,4 +1,5 @@
 import os
+import sys
 from mcp.server.fastmcp import FastMCP
 from audacity_mcp_shared.audio_file import describe
 from audacity_mcp_shared.constants import ALLOWED_EXPORT_FORMATS, COMMON_SAMPLE_RATES
@@ -206,6 +207,9 @@ def register(mcp: FastMCP):
         """
         from audacity_mcp_shared.constants import COMMON_SAMPLE_RATES, PipePaths, Timeouts
 
+        # Report the paths a real command would use, Snap detection included -
+        # otherwise this says "no pipes" for a Snap Audacity that works fine.
+        PipePaths.rediscover()
         to_pipe = _pipe_state(PipePaths.TO_SRV)
         from_pipe = _pipe_state(PipePaths.FROM_SRV)
 
@@ -232,6 +236,14 @@ def register(mcp: FastMCP):
                 "Audacity (Cmd+Q / File > Exit — closing the window is not enough) and relaunch: "
                 "the pipes are created at launch."
             )
+            if sys.platform == "linux":
+                next_steps.append(
+                    "If Audacity IS running, check whether it is the Snap build (Ubuntu's "
+                    "default): a Snap has a private /tmp, so its pipes are invisible here. "
+                    "They are normally found automatically via /proc/<pid>/root/tmp; if that "
+                    "fails, set AUDACITY_PIPE_DIR to the directory holding them and restart "
+                    "the MCP client. An apt or AppImage build avoids the problem entirely."
+                )
         elif not (to_pipe["exists"] and from_pipe["exists"]):
             missing = "from" if to_pipe["exists"] else "to"
             next_steps.append(

@@ -128,6 +128,11 @@ class AudacityClient:
         import os
         import time
 
+        # A Snap Audacity's FIFOs are not under the host's /tmp at all, and the
+        # server usually starts before Audacity does, so where they live can only
+        # be settled here rather than at import (upstream issue #7). No-op everywhere else.
+        PipePaths.rediscover()
+
         from_fd = os.open(PipePaths.FROM_SRV, os.O_RDONLY | os.O_NONBLOCK)
         try:
             deadline = time.monotonic() + Timeouts.PIPE_OPEN

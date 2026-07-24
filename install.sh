@@ -129,6 +129,17 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
     AUD_CFG="$HOME/Library/Application Support/audacity/audacity.cfg"
 else
     AUD_CFG="${XDG_CONFIG_HOME:-$HOME/.config}/audacity/audacity.cfg"
+    # A Snap Audacity (Ubuntu's default install) keeps its config inside the
+    # snap's own home, so the XDG path above simply does not exist and this
+    # step used to report "config not found" on a perfectly good install.
+    SNAP_CFG="$HOME/snap/audacity/current/.config/audacity/audacity.cfg"
+    if [ ! -f "$AUD_CFG" ] && [ -f "$SNAP_CFG" ]; then
+        AUD_CFG="$SNAP_CFG"
+        echo "  Found a Snap install - using $AUD_CFG"
+        echo "  Note: Snap Audacity keeps its script pipes in a private /tmp."
+        echo "  audacity-mcp-max finds them automatically; if it ever cannot,"
+        echo "  set AUDACITY_PIPE_DIR (see docs/INSTALLATION.md)."
+    fi
 fi
 
 if [ ! -f "$AUD_CFG" ]; then

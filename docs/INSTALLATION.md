@@ -224,6 +224,35 @@ If Audacity isn't running, you'll get a "pipe not found" error.
 
 ---
 
+## Snap Audacity on Ubuntu
+
+Ubuntu installs Audacity as a Snap by default. A Snap runs in its own mount
+namespace with a private `/tmp`, so its script pipes never appear at
+`/tmp/audacity_script_pipe.*` on the host - which looks exactly like Audacity
+not running, and is why an install can appear to succeed and then do nothing.
+
+**No setup is needed for this.** When the usual paths are empty, the server
+looks for a running `audacity` process and uses its private `/tmp` at
+`/proc/<pid>/root/tmp` instead. The lookup runs on each connection, so it is
+fine to start your AI client before Audacity, and it survives an Audacity
+restart.
+
+If your setup is confined some other way (Flatpak, a container, a Snap whose
+process this server cannot see), point it at the directory yourself:
+
+```bash
+export AUDACITY_PIPE_DIR=/proc/$(pgrep -x audacity | head -1)/root/tmp
+```
+
+Set in the environment your MCP client launches the server in - for a JSON
+config, that is an `"env"` block alongside `"command"`. When it is set, nothing
+is auto-detected. `audacity_health_check` reports which paths are in use.
+
+To avoid the issue entirely, install Audacity from apt, a PPA, or the AppImage
+rather than Snap.
+
+---
+
 ## Verify It Works
 
 1. **Open Audacity** (with mod-script-pipe enabled)
@@ -284,6 +313,7 @@ That's it — audacity-mcp-max automatically detects GPU and uses it. No CUDA to
 | Connection works once then fails | Pipe disconnected (Audacity crash/restart) | Just try again — audacity-mcp-max auto-reconnects |
 | "Access denied" (Windows) | Running Audacity and client as different users | Run both as the same user (don't mix admin/non-admin) |
 | Pipes missing in /tmp (macOS/Linux) | Audacity didn't create them | Check Audacity is running, check console for errors |
+| Nothing works on Ubuntu, Audacity is definitely running | Snap Audacity has a private /tmp, so its pipes are invisible to the host | Handled automatically (see [Snap Audacity](#snap-audacity-on-ubuntu) below). If it still fails, set `AUDACITY_PIPE_DIR` |
 | "No module named faster_whisper" | Not installed | `pip install faster-whisper` |
 | Model download fails | Network issue | Check internet and retry — models cache after first download |
 | Config not working | Wrong path or JSON syntax | Copy the complete example above, replace paths, validate JSON at jsonlint.com |

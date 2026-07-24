@@ -374,6 +374,7 @@ The installer enables this automatically, but if it didn't work (e.g. Audacity w
 | "No module named faster_whisper" | Run `pip install faster-whisper`. Transcription is optional — everything else works without it. |
 | Model download fails | Check internet and retry. Models cache locally after first download. |
 | Pipes missing in /tmp (macOS/Linux) | Check Audacity is running and mod-script-pipe is enabled. Check Audacity's console for errors. |
+| Ubuntu: nothing responds even though Audacity is open | Snap Audacity keeps its pipes in a private `/tmp`. They are found automatically under `/proc/<pid>/root/tmp`; if that fails, set `AUDACITY_PIPE_DIR` to the directory holding them. See [Snap Audacity on Ubuntu](docs/INSTALLATION.md#snap-audacity-on-ubuntu). |
 
 ---
 
