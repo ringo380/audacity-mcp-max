@@ -53,7 +53,11 @@ Then run `/audacity:setup`. It checks the parts people get wrong - uv,
 mod-script-pipe, whether Audacity needs to be closed before its config can be
 changed - and finishes by verifying a real round trip. Needs
 [uv](https://docs.astral.sh/uv/); no pip step and nothing to add to your MCP
-client config.
+client config. It replaces step 2 below - do not also run the installer, which
+would install a second copy through pip. Once `/audacity:setup` finishes, go
+straight to [Start editing](#3-start-editing).
+
+Without the plugin, get the source first:
 
 **Option A:** Click the green **Code** button above → **Download ZIP** → extract to a folder
 
