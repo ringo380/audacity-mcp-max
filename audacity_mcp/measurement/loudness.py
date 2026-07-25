@@ -20,6 +20,9 @@ _OFFSET = -0.691  # the BS.1770 loudness offset
 # mono and stereo (Export2 is asked for 1 or 2 channels), so unity throughout.
 _CHANNEL_WEIGHT = 1.0
 
+# Input samples of context carried across chunk boundaries for true peak.
+_TP_PAD = 64
+
 
 class LoudnessUnavailable(Exception):
     """numpy or scipy is missing, so loudness cannot be measured."""
@@ -77,20 +80,27 @@ def k_weighting_sos(sample_rate: float):
     return np.array([shelf_b + shelf_a, hp_b + hp_a], dtype=np.float64)
 
 
-def _load_channels(path: str):
-    """Whole-file per-channel float arrays, plus the AudioInfo."""
+def _chunks(path: str):
+    """(AudioInfo, iterator of per-channel float64 arrays).
+
+    read_audio hands back a second of audio at a time and this keeps it that
+    way. An earlier version concatenated the lot into one array per channel,
+    which cost about 10 MB of resident memory per second of audio once the 4x
+    oversampling for true peak was included - roughly 18 GB on a 45-minute
+    podcast, which is exactly the length this plugin's pipelines are for. It did
+    not read as a memory bug either: MemoryError is caught upstream, so the
+    result was loudness quietly reporting "unavailable" on every real file while
+    passing every test, because the test files are seconds long.
+    """
     import numpy as np
 
     info, blocks = read_audio(path)
-    collected = [[] for _ in range(info.channels)]
-    for block in blocks:
-        for c, chan in enumerate(block):
-            collected[c].append(np.asarray(chan, dtype=np.float64))
-    channels = [
-        np.concatenate(parts) if parts else np.zeros(0, dtype=np.float64)
-        for parts in collected
-    ]
-    return info, channels
+
+    def gen():
+        for block in blocks:
+            yield [np.asarray(chan, dtype=np.float64) for chan in block]
+
+    return info, gen()
 
 
 def integrated_lufs(path: str, dual_mono: bool = True) -> float | None:
@@ -104,33 +114,64 @@ def integrated_lufs(path: str, dual_mono: bool = True) -> float | None:
     import numpy as np
     from scipy.signal import sosfilt
 
-    info, channels = _load_channels(path)
-    if not channels or channels[0].size == 0:
-        return None
-
-    if dual_mono and len(channels) == 1:
-        channels = [channels[0], channels[0]]
-
-    sos = k_weighting_sos(info.sample_rate)
-    filtered = [sosfilt(sos, ch) for ch in channels]
+    info, chunks = _chunks(path)
 
     block_frames = int(round(_BLOCK_SECONDS * info.sample_rate))
     step = int(round(block_frames * (1.0 - _OVERLAP)))
-    n = filtered[0].size
-    if n < block_frames or step <= 0:
+    if block_frames <= 0 or step <= 0:
         return None
 
-    starts = np.arange(0, n - block_frames + 1, step)
-    if starts.size == 0:
-        return None
+    sos = k_weighting_sos(info.sample_rate)
 
-    # z[j] = the weighted mean square of block j, summed over channels.
-    z = np.zeros(starts.size, dtype=np.float64)
-    for ch in filtered:
-        squares = ch * ch
-        cumulative = np.concatenate(([0.0], np.cumsum(squares)))
-        block_sums = cumulative[starts + block_frames] - cumulative[starts]
-        z += _CHANNEL_WEIGHT * (block_sums / block_frames)
+    # The K-weighting recursion has to run over the whole signal, so each chunk
+    # picks up where the last one left off (zi) rather than restarting the
+    # filter - restarting would put a transient at every chunk boundary.
+    state = None
+    # Held filtered samples that no complete gating block has consumed yet.
+    held: list = []
+    held_origin = 0      # index in the filtered stream of held[c][0]
+    next_start = 0       # start of the next gating block, on the global grid
+    weighted: list = []  # per block: the weighted mean square, summed over channels
+
+    for chunk in chunks:
+        if dual_mono and len(chunk) == 1:
+            # Duplicating the array would double the memory for an identical
+            # result; the channel sum is what dual mono actually means here.
+            weight = 2.0 * _CHANNEL_WEIGHT
+        else:
+            weight = _CHANNEL_WEIGHT
+        if not chunk or chunk[0].size == 0:
+            continue
+
+        if state is None:
+            # Zeros, not the step-response state sosfilt_zi gives: the filter
+            # starts cold at the head of the file, which is what the reference
+            # implementations and the EBU fixtures assume.
+            state = [np.zeros((sos.shape[0], 2)) for _ in chunk]
+            held = [np.zeros(0, dtype=np.float64) for _ in chunk]
+
+        buffers = []
+        for c, ch in enumerate(chunk):
+            y, state[c] = sosfilt(sos, ch, zi=state[c])
+            buffers.append(np.concatenate((held[c], y)))
+
+        available = held_origin + buffers[0].size
+        while next_start + block_frames <= available:
+            local = next_start - held_origin
+            total = 0.0
+            for buf in buffers:
+                seg = buf[local:local + block_frames]
+                total += weight * (float(np.dot(seg, seg)) / block_frames)
+            weighted.append(total)
+            next_start += step
+
+        drop = next_start - held_origin
+        held = [buf[drop:] for buf in buffers]
+        held_origin = next_start
+
+    if not weighted:
+        return None
+    z = np.asarray(weighted, dtype=np.float64)
 
     with np.errstate(divide="ignore"):
         loudness = _OFFSET + 10.0 * np.log10(np.maximum(z, 1e-20))
@@ -162,18 +203,50 @@ def true_peak_dbtp(path: str, oversample: int = 4) -> float | None:
     import numpy as np
     from scipy.signal import resample_poly
 
-    _, channels = _load_channels(path)
-    if not channels or channels[0].size == 0:
-        return None
+    _, chunks = _chunks(path)
 
     peak = 0.0
-    for ch in channels:
-        if ch.size == 0:
+    # Carried context, so the resampler never sees a fabricated edge in a region
+    # whose peak is then counted. resample_poly's anti-imaging filter is about
+    # 10*oversample taps at the upsampled rate, so _TP_PAD input samples is
+    # several times the history it needs.
+    pad = _TP_PAD
+    carry: list = []
+    first = True
+
+    def take(chunk, last):
+        nonlocal peak, carry, first
+        if first:
+            carry = [np.zeros(0, dtype=np.float64) for _ in chunk]
+        for c, ch in enumerate(chunk):
+            seg = np.concatenate((carry[c], ch))
+            out = np.abs(resample_poly(seg, oversample, 1))
+            # Skip the head unless this is genuinely the start of the file, and
+            # skip the tail unless this is the end of it. Those samples have no
+            # future context yet, and are covered by the next chunk instead -
+            # its carry holds 2*pad samples, so the two valid ranges meet rather
+            # than leaving a gap. Reading a peak out of a region the resampler
+            # filtered against fabricated zeros is how an edge becomes an
+            # overshoot, and a true-peak ceiling exists to catch overshoots.
+            lo = 0 if first else pad * oversample
+            hi = out.size if last else max(lo, out.size - pad * oversample)
+            if hi > lo:
+                chunk_peak = float(out[lo:hi].max())
+                if chunk_peak > peak:
+                    peak = chunk_peak
+            carry[c] = seg[-2 * pad:] if seg.size >= 2 * pad else seg
+        first = False
+
+    # One chunk of lookahead, purely so the final chunk can be told it is final.
+    pending = None
+    for chunk in chunks:
+        if not chunk or chunk[0].size == 0:
             continue
-        upsampled = resample_poly(ch, oversample, 1)
-        channel_peak = float(np.max(np.abs(upsampled)))
-        if channel_peak > peak:
-            peak = channel_peak
+        if pending is not None:
+            take(pending, last=False)
+        pending = chunk
+    if pending is not None:
+        take(pending, last=True)
 
     if peak <= 1e-10:
         return None

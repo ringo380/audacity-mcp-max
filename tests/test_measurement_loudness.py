@@ -159,3 +159,74 @@ class TestTruePeak:
         from audacity_mcp.measurement.loudness import true_peak_dbtp
         p = write_signal(tmp_path / "z.wav", [silence(1.0, rate=48000)], rate=48000)
         assert true_peak_dbtp(p) is None
+
+
+class TestBoundedMemory:
+    """Both loudness functions have to stream.
+
+    The first version concatenated the file into one array per channel and then
+    4x-upsampled that whole array for true peak. It passed every test, because
+    every test file is a second or two long, while costing about 10 MB of
+    resident memory per second of audio - roughly 18 GB on a 45-minute podcast,
+    which is the length these pipelines exist for. Worse, it did not fail
+    loudly: MemoryError is caught upstream and turns into "loudness
+    unavailable", so the headline feature would have quietly never worked on
+    real material.
+
+    The audio here is synthesised straight into the block iterator rather than
+    written to a file, so the test measures the measurement and not the writing
+    of a 100 MB WAV.
+    """
+
+    RATE = 8000
+    SECONDS = 1200
+    # Streaming holds one block plus one gating block, a few MB. Whole-file
+    # would be about 150 MB for the channels and 300 MB more for the
+    # oversampling, so anything under this bound cannot be holding the file.
+    MAX_GROWTH_MB = 120
+
+    def _patch_reader(self, monkeypatch):
+        import numpy as np
+
+        from audacity_mcp.measurement import loudness as mod
+        from audacity_mcp.measurement.reader import AudioInfo
+
+        rate, seconds = self.RATE, self.SECONDS
+        info = AudioInfo(
+            sample_rate=rate, channels=2, frames=rate * seconds, duration=float(seconds)
+        )
+        t = np.arange(rate, dtype=np.float64) / rate
+        left = 0.2 * np.sin(2.0 * math.pi * 300.0 * t)
+        right = 0.2 * np.sin(2.0 * math.pi * 437.0 * t)
+
+        def fake_read_audio(path, block_frames=0):
+            def gen():
+                for _ in range(seconds):
+                    yield [left.copy(), right.copy()]
+            return info, gen()
+
+        monkeypatch.setattr(mod, "read_audio", fake_read_audio)
+
+    def _growth_mb(self, fn):
+        import resource
+
+        before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        result = fn()
+        after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # ru_maxrss is bytes on macOS and kilobytes on Linux.
+        scale = 1024 * 1024 if after > 10 ** 7 else 1024
+        return result, (after - before) / scale
+
+    def test_integrated_lufs_does_not_hold_the_file(self, monkeypatch):
+        from audacity_mcp.measurement.loudness import integrated_lufs
+        self._patch_reader(monkeypatch)
+        value, growth = self._growth_mb(lambda: integrated_lufs("ignored.wav"))
+        assert value is not None
+        assert growth < self.MAX_GROWTH_MB, f"grew {growth:.0f} MB"
+
+    def test_true_peak_does_not_hold_the_file(self, monkeypatch):
+        from audacity_mcp.measurement.loudness import true_peak_dbtp
+        self._patch_reader(monkeypatch)
+        value, growth = self._growth_mb(lambda: true_peak_dbtp("ignored.wav"))
+        assert value is not None
+        assert growth < self.MAX_GROWTH_MB, f"grew {growth:.0f} MB"
