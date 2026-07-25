@@ -19,6 +19,7 @@ Three things have to be true, and each fails differently:
 and stop.** That is the exact command the transcription tools name when the
 extra is missing, so someone arriving here has a working setup already and
 wants the one thing they are missing, not another pass over all of it.
+**`/audacity:setup --measurement` is the same shortcut for Step 5.**
 
 ## Step 1: check uv
 
@@ -95,7 +96,20 @@ the resolved-path lookup was for:
 cd "${CLAUDE_PLUGIN_ROOT}" && "<uv path from Step 1>" sync --extra transcription
 ```
 
-## Step 5: verify
+## Step 5: measurement (optional)
+
+Only if the user wants loudness verification (LUFS, true-peak, target-met
+checks) in pipeline reports. Without it, those fields report `null` or
+`unknown` rather than a number - not a fault, just an optional extra.
+
+Use the `uv:` path Step 1 printed rather than a bare `uv`, for the same reason
+as Step 4:
+
+```bash
+cd "${CLAUDE_PLUGIN_ROOT}" && "<uv path from Step 1>" sync --extra measurement
+```
+
+## Step 6: verify
 
 Ask the user to launch Audacity, then call the `audacity_health_check` tool.
 

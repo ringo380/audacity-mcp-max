@@ -20,6 +20,7 @@ sys.path.insert(0, str(REPO / "scripts"))
 from plugin_bootstrap import (  # noqa: E402
     UV_INSTALL_URL,
     find_uv,
+    measurement_state,
     reexec_if_old,
     transcription_state,
 )
@@ -58,6 +59,19 @@ def main() -> int:
         print("transcription extra: not installed (/audacity:setup --transcription)")
     else:
         print("transcription extra: unknown (%s)" % detail)
+
+    # Checked the same way as transcription: in the plugin's venv when that is
+    # not the interpreter running this script, since `uv sync --extra
+    # measurement` installs there and not here. Asserting "not installed" from
+    # the wrong interpreter is how the transcription check told users forever
+    # that they had not completed a step they had.
+    state, detail = measurement_state(REPO, degraded=old_python)
+    if state == "installed":
+        print("measurement: installed")
+    elif state == "missing":
+        print("measurement: not installed (/audacity:setup --measurement)")
+    else:
+        print("measurement: unknown (%s)" % detail)
 
     if old_python:
         # audacity_mcp_shared uses 3.10 syntax, so there is nothing below this

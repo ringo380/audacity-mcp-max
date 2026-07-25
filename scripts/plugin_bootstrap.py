@@ -210,13 +210,18 @@ def reexec_if_old(script, plugin_root, uv=None, version=None, exec_=None, probe=
     return _too_old(version, "could not run %s" % ", ".join(unusable))
 
 
-def transcription_state(plugin_root, degraded=None):
-    """('installed' | 'missing' | 'unknown', detail) for the transcription extra.
+def _extra_state(plugin_root, modules, degraded=None):
+    """('installed' | 'missing' | 'unknown', detail) shared by every optional
+    extra's probe.
 
     A plain import in whatever interpreter is running answers a different
-    question than the one asked. `uv sync --extra transcription` installs into
-    the plugin's own .venv, so a user who had just finished that step was told
+    question than the one asked. `uv sync --extra <name>` installs into the
+    plugin's own .venv, so a user who had just finished that step was told
     forever that they had not. Probe the venv whenever it is not us.
+
+    `modules` lists every module the extra requires - all must import for
+    "installed", since an extra like measurement (numpy + scipy) is only
+    useful when its whole set is present.
     """
     if degraded:
         return ("unknown", "cannot check under this interpreter")
@@ -224,7 +229,7 @@ def transcription_state(plugin_root, degraded=None):
     if venv and not _is_current_interpreter(venv):
         try:
             proc = subprocess.run(
-                [venv, "-c", "import faster_whisper"],
+                [venv, "-c", "import " + ", ".join(modules)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=120,
@@ -233,13 +238,29 @@ def transcription_state(plugin_root, degraded=None):
             return ("unknown", "%s: %s" % (type(exc).__name__, exc))
         return ("installed", "") if proc.returncode == 0 else ("missing", "")
     try:
-        import faster_whisper  # noqa: F401
+        for module in modules:
+            __import__(module)
     except ImportError:
         return ("missing", "")
     except Exception as exc:
-        # ctranslate2 and onnxruntime are native. A wheel built for the wrong
-        # architecture, or a missing system library, fails the dlopen with
-        # OSError rather than ImportError - which escaped the doctor's catch
-        # and took the whole report down with it before the pipe section.
+        # Native extension modules (ctranslate2, onnxruntime, scipy's own
+        # compiled bits) can fail the dlopen with OSError rather than
+        # ImportError on a wheel built for the wrong architecture, or a
+        # missing system library - which escaped the doctor's catch and took
+        # the whole report down with it before the pipe section.
         return ("unknown", "%s: %s" % (type(exc).__name__, exc))
     return ("installed", "")
+
+
+def transcription_state(plugin_root, degraded=None):
+    """('installed' | 'missing' | 'unknown', detail) for the transcription extra."""
+    return _extra_state(plugin_root, ["faster_whisper"], degraded)
+
+
+def measurement_state(plugin_root, degraded=None):
+    """('installed' | 'missing' | 'unknown', detail) for the measurement extra.
+
+    Both numpy and scipy are required - a half-installed pair is as useless as
+    neither, so either missing reports "missing" rather than "installed".
+    """
+    return _extra_state(plugin_root, ["numpy", "scipy"], degraded)

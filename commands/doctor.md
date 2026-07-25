@@ -61,6 +61,13 @@ Read the output and note anything that is not in a good state:
   - `(see the python line above)` - the old-interpreter case above. Fix that,
     not the install.
   - anything else - the plugin's own files are broken. Reinstall the plugin.
+- **`measurement: not installed`** - pipelines will still run, but their reports
+  will show `lufs: null` and any loudness target as `unknown` rather than met or
+  missed. Not a fault; it is an optional extra. Point the user at
+  `/audacity:setup --measurement` if they want loudness verification.
+- **`measurement: unknown`** - the check could not be run, which on this script
+  means the venv interpreter could not be probed. Treat it exactly like the
+  transcription `unknown` case above.
 
 ## Step 2: the server side
 
