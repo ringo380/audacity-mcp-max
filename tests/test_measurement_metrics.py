@@ -197,3 +197,28 @@ class TestBackendsAgree:
         monkeypatch.setattr(mod, "_accumulate", mod._accumulate_stdlib)
         slow = compute_metrics(p)["click_count"]
         assert fast == slow == 0
+
+    def test_click_state_does_not_leak_between_channels_across_blocks(
+        self, tmp_path, monkeypatch
+    ):
+        """The carry-over sample has to be per channel, not one shared value.
+
+        The case above cannot see this. It is a fifth of a second, so it is a
+        single block, and the first block has no carry-over to get wrong. The
+        rule only bites at a block boundary: with one shared carry-over, the
+        first sample of L in block 2 is compared against the last sample of R
+        in block 1, which on a file whose channels sit at different levels
+        invents a click every second.
+        """
+        from audacity_mcp.measurement import metrics as mod
+
+        p = write_signal(tmp_path / "dc.wav", [
+            constant(0.9, 3.0),
+            constant(-0.9, 3.0),
+        ])
+        backends = ["_accumulate_stdlib"]
+        if mod.HAVE_NUMPY:
+            backends.append("_accumulate_numpy")
+        for name in backends:
+            monkeypatch.setattr(mod, "_accumulate", getattr(mod, name))
+            assert compute_metrics(p)["click_count"] == 0, name

@@ -318,6 +318,14 @@ Powered by [faster-whisper](https://github.com/SYSTRAN/faster-whisper) — runs 
 
 ---
 
+### Loudness Measurement (Optional)
+
+Every `auto_` cleanup and mastering pipeline can measure the audio before and after itself and report LUFS (integrated loudness) and true peak alongside the older peak/noise-floor metrics, via a `measurement` extra: `pip install "audacity-mcp-max[measurement]"`, or `/audacity:setup --measurement` from the plugin.
+
+This buys LUFS and true-peak verification - `auto_analyze_audio` and every pipeline's `measurement` block report real numbers, and targets that depend on loudness (podcast/broadcast, ACX, the genre-tuned mastering presets) can actually be checked. Without the extra, everything still works: peak, RMS, noise floor, clicks, and silence-gap metrics are unaffected, loudness fields read `null`, and any target that needed them reports `unknown` rather than a false "missed".
+
+---
+
 ## What's New - v0.3.0
 
 The server ships as a Claude Code plugin, alongside the existing pip/installer paths.

@@ -40,6 +40,24 @@ class TestEbuTech3341:
         p = write_signal(tmp_path / "c3.wav", combined, rate=48000)
         assert integrated_lufs(p) == pytest.approx(-23.0, abs=0.2)
 
+    def test_absolute_gate_is_the_rule_that_discards_a_sub_70_passage(self, tmp_path):
+        """The absolute gate on its own, with the relative gate held off it.
+
+        The near-silence case above cannot see this rule. Digital silence reads
+        around -200 LUFS, which the relative gate discards by itself, so that
+        test passes whatever the absolute gate is set to. Here the whole file is
+        quiet: the ungated mean is about -66 LUFS, which puts the relative gate
+        near -76 and would keep the -73 LUFS passage. Only the -70 absolute gate
+        throws it out, so the file has to read as the loud part alone.
+        """
+        from audacity_mcp.measurement.loudness import integrated_lufs
+        loud = _stereo_sine(-66.0, seconds=10.0)
+        quiet = _stereo_sine(-73.0, seconds=10.0)
+        combined = [loud[0] + quiet[0], loud[1] + quiet[1]]
+        p = write_signal(tmp_path / "abs.wav", combined, rate=48000)
+        loud_only = write_signal(tmp_path / "abs_loud.wav", loud, rate=48000)
+        assert integrated_lufs(p) == pytest.approx(integrated_lufs(loud_only), abs=0.2)
+
     def test_relative_gate_discards_quiet_passages(self, tmp_path):
         """A passage more than 10 LU below the ungated mean is gated out."""
         from audacity_mcp.measurement.loudness import integrated_lufs
@@ -76,6 +94,21 @@ class TestMonoConvention:
         assert integrated_lufs(mono, dual_mono=True) == pytest.approx(
             integrated_lufs(stereo), abs=0.1
         )
+
+    def test_the_default_convention_is_dual_mono(self, tmp_path):
+        """The two cases above both name a convention, so neither of them can
+        see the default - and the default is the only one that ships, since
+        measure_file calls integrated_lufs with no convention argument. A
+        single-channel default would report every mono file 3 dB below the
+        target Audacity had just normalised it to.
+        """
+        from audacity_mcp.measurement.loudness import integrated_lufs
+        mono = write_signal(
+            tmp_path / "m.wav", [sine(1000, 20.0, rate=48000, amplitude=db_to_amplitude(-23.0))],
+            rate=48000,
+        )
+        stereo = write_signal(tmp_path / "s.wav", _stereo_sine(-23.0), rate=48000)
+        assert integrated_lufs(mono) == pytest.approx(integrated_lufs(stereo), abs=0.1)
 
     def test_single_channel_convention_is_three_db_quieter(self, tmp_path):
         from audacity_mcp.measurement.loudness import integrated_lufs
