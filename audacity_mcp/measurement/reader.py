@@ -24,12 +24,15 @@ class AudioInfo:
     duration: float
 
 
-# `wave` refuses IEEE-float WAV (format tag 3) outright, so a 4-byte width that
-# reaches us is always signed int32 PCM - decode it as such rather than
-# reinterpreting the bytes as float32, which read as garbage but succeeded.
-# 32-bit-float exports stay unreadable here until the export path is wired in
-# (Task 7) and can decide whether to sniff the fmt tag.
-_FORMATS = {2: ("h", 32768.0), 4: ("i", 2147483648.0)}
+# Keyed on (sample width in bytes, is_float). A 4-byte width is ambiguous -
+# int32 and float32 are both 4 bytes - so the container reader tells us which
+# via its `sample_format`. Decoding int32 bytes as float (or the reverse) reads
+# as garbage but succeeds, which is why the two are kept apart here.
+_FORMATS = {
+    (2, False): ("h", 32768.0),
+    (4, False): ("i", 2147483648.0),
+    (4, True): ("f", 1.0),
+}
 
 
 def read_audio(
@@ -56,9 +59,13 @@ def read_audio(
         wf.close()
         raise UnreadableAudio(f"{type(e).__name__}: {e}") from e
 
-    if sw not in _FORMATS:
+    # A 4-byte width can be int32 or float32; the container reader disambiguates.
+    is_float = getattr(wf, "sample_format", "int") == "float"
+    fmt = _FORMATS.get((sw, is_float))
+    if fmt is None:
         wf.close()
-        raise UnreadableAudio(f"unsupported sample width: {sw} bytes")
+        kind = "float" if is_float else "int"
+        raise UnreadableAudio(f"unsupported sample format: {sw} bytes, {kind}")
     if rate <= 0 or channels <= 0:
         wf.close()
         raise UnreadableAudio(f"nonsense header: rate={rate} channels={channels}")
@@ -70,11 +77,11 @@ def read_audio(
         duration=round(frames / rate, 3) if rate else 0.0,
     )
     size = block_frames if block_frames > 0 else rate
-    return info, _iter_blocks(wf, info, sw, size)
+    return info, _iter_blocks(wf, info, sw, fmt, size)
 
 
-def _iter_blocks(wf, info: AudioInfo, sw: int, block_frames: int) -> Iterator[list]:
-    fmt_char, max_val = _FORMATS[sw]
+def _iter_blocks(wf, info: AudioInfo, sw: int, fmt, block_frames: int) -> Iterator[list]:
+    fmt_char, max_val = fmt
     ch = info.channels
     try:
         read = 0
@@ -107,7 +114,7 @@ def _decode_stdlib(raw, frames, channels, fmt_char, max_val):
 if HAVE_NUMPY:
     import numpy as _np
 
-    _DTYPES = {"h": "<i2", "i": "<i4"}
+    _DTYPES = {"h": "<i2", "i": "<i4", "f": "<f4"}
 
     def _decode_numpy(raw, frames, channels, fmt_char, max_val):
         flat = _np.frombuffer(raw, dtype=_DTYPES[fmt_char], count=frames * channels)

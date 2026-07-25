@@ -69,14 +69,26 @@ class TestBlocks:
 
 class TestSampleWidths:
     def test_int32_pcm_normalises_to_unit_range(self, tmp_path):
-        """A 4-byte width is always signed int32 here (wave rejects float32),
-        so full-scale int32 must read as +/-1.0, not as float bytes divided by
-        1.0 - which would report peaks in the billions and clip everything."""
+        """A 4-byte int32 width must read as +/-1.0, not as float bytes divided
+        by 1.0 - which would report peaks in the billions and clip everything."""
         p = write_int32(tmp_path / "i32.wav",
                         [2147483647, -2147483648, 0, 1073741824])
         _, blocks = read_audio(p, block_frames=8000)
         got = [round(float(v), 4) for b in blocks for v in b[0]]
         assert got == [1.0, -1.0, 0.0, 0.5]
+
+    def test_float32_wav_is_read_as_float_not_int32(self, tmp_path):
+        """int32 and float32 are both 4 bytes; the container reader says which.
+        Float samples are already in -1.0..1.0, so decoding them as int32 (or
+        the reverse) reads as garbage while still succeeding - which is why the
+        two must not collapse to the same code path."""
+        from tests.test_audio_file import write_float_wav
+        p = write_float_wav(tmp_path / "f.wav", rate=48000,
+                            samples=(1.0, -1.0, 0.0, 0.5, -0.25))
+        info, blocks = read_audio(p, block_frames=48000)
+        got = [round(float(v), 4) for b in blocks for v in b[0]]
+        assert got == [1.0, -1.0, 0.0, 0.5, -0.25]
+        assert info.sample_rate == 48000
 
 
 class TestPartialFrame:

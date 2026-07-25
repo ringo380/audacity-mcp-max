@@ -157,6 +157,115 @@ class AiffReader:
         return False
 
 
+# WAV fmt-chunk format tags. `wave` only accepts PCM (1); the others it rejects
+# with wave.Error, which is why float has to be parsed here.
+_WAVE_FORMAT_PCM = 0x0001
+_WAVE_FORMAT_IEEE_FLOAT = 0x0003
+_WAVE_FORMAT_EXTENSIBLE = 0xFFFE
+
+
+def _riff_chunks(fh):
+    """Yield (chunk_id, size, data_offset) for each chunk in a RIFF WAVE."""
+    pos = 12
+    while True:
+        fh.seek(pos)
+        header = fh.read(8)
+        if len(header) < 8:
+            return
+        chunk_id, size = struct.unpack("<4sI", header)
+        yield chunk_id, size, pos + 8
+        pos += 8 + size + (size & 1)  # chunks are word-aligned
+
+
+class FloatWavReader:
+    """A `wave`-shaped reader for IEEE-float WAV, which `wave` refuses.
+
+    Audacity's internal format is 32-bit float and its exporter is sticky, so a
+    project exported once as float keeps producing float WAVs. `wave` rejects
+    those outright (format tag 3), and a 4-byte width alone cannot tell float
+    from int32 - so this reader exposes `sample_format = "float"` for the decode
+    layer to branch on. Samples are already little-endian, as callers expect.
+    """
+
+    sample_format = "float"
+
+    def __init__(self, path: str):
+        self._fh = open(path, "rb")
+        try:
+            self._parse()
+        except UnsupportedAudioFile:
+            self._fh.close()
+            raise
+        except Exception as e:
+            self._fh.close()
+            raise UnsupportedAudioFile(f"unreadable float WAV: {e}") from e
+
+    def _parse(self):
+        fmt = None
+        data = None
+        for chunk_id, size, offset in _riff_chunks(self._fh):
+            if chunk_id == b"fmt ":
+                self._fh.seek(offset)
+                fmt = self._fh.read(size)
+            elif chunk_id == b"data":
+                data = (offset, size)
+        if fmt is None or data is None:
+            raise UnsupportedAudioFile("WAV has no fmt or data chunk")
+        if len(fmt) < 16:
+            raise UnsupportedAudioFile("WAV fmt chunk is truncated")
+
+        tag, channels, rate, _byte_rate, _block_align, bits = struct.unpack(
+            "<HHIIHH", fmt[:16]
+        )
+        # WAVE_FORMAT_EXTENSIBLE hides the real format in the SubFormat GUID,
+        # whose first two bytes are the format code.
+        if tag == _WAVE_FORMAT_EXTENSIBLE:
+            if len(fmt) < 26:
+                raise UnsupportedAudioFile("EXTENSIBLE WAV fmt chunk is truncated")
+            tag = struct.unpack("<H", fmt[24:26])[0]
+        if tag != _WAVE_FORMAT_IEEE_FLOAT:
+            raise UnsupportedAudioFile(
+                f"WAV format tag {tag} is not IEEE float; only float is parsed here"
+            )
+        if bits != 32:
+            raise UnsupportedAudioFile(
+                f"{bits}-bit float WAV is not supported; only 32-bit float is"
+            )
+
+        self._channels = channels
+        self._rate = rate
+        self._sampwidth = 4
+        offset, size = data
+        frame_bytes = self._sampwidth * channels
+        self._nframes = size // frame_bytes if frame_bytes else 0
+        self._fh.seek(offset)
+
+    def getframerate(self) -> int:
+        return self._rate
+
+    def getnframes(self) -> int:
+        return self._nframes
+
+    def getsampwidth(self) -> int:
+        return self._sampwidth
+
+    def getnchannels(self) -> int:
+        return self._channels
+
+    def readframes(self, n: int) -> bytes:
+        return self._fh.read(n * self._sampwidth * self._channels)
+
+    def close(self):
+        self._fh.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
 def open_pcm(path: str):
     """Open a PCM export for reading, whatever container it turned out to be.
 
@@ -165,7 +274,15 @@ def open_pcm(path: str):
     """
     container = sniff_container(path)
     if container == "wav":
-        return wave.open(path, "rb")
+        try:
+            return wave.open(path, "rb")
+        except (wave.Error, EOFError):
+            # wave rejects any non-PCM tag (float is tag 3) with wave.Error, and
+            # trips over a WAVE_FORMAT_EXTENSIBLE fmt chunk with EOFError.
+            # Audacity's sticky exporter can leave a project emitting 32-bit
+            # float WAV, so parse that ourselves rather than failing the
+            # measurement.
+            return FloatWavReader(path)
     if container == "aiff":
         return AiffReader(path)
     raise UnsupportedAudioFile(
