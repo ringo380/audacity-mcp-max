@@ -179,13 +179,17 @@ def register(mcp: FastMCP):
         job["current_step"] = name
         try:
             reply = await coro
-            job["steps_applied"].append(name)
             noop = None
             if isinstance(reply, dict) and reply.get("success") is False:
+                # Not appended to steps_applied: a step Audacity refused did not
+                # happen, and steps_applied is what steps_completed and the
+                # result message are built from. Naming it there is the same
+                # lie as reporting a measurement that failed as a clean one.
                 noop = f"Audacity reported failure: {reply.get('message', '')}"
                 job["steps_failed"].append(f"{name}: {noop}")
                 _record_step(job, name, False, noop)
             else:
+                job["steps_applied"].append(name)
                 _record_step(job, name, True, None)
         except Exception as e:
             job["steps_failed"].append(f"{name}: {e}")
@@ -237,7 +241,15 @@ def register(mcp: FastMCP):
         tmp_wav = _temp_wav_path()
         try:
             await _select_all()
-            await client.execute_long("Export2", Filename=tmp_wav, NumChannels=1)
+            # No NumChannels: the export has to carry the project's own channel
+            # count. Forcing a mono downmix and then applying the dual-mono
+            # convention to it measures something the project is not. On
+            # uncorrelated stereo the two disagree by around 3 dB, which is the
+            # exact error the dual-mono convention exists to avoid, reintroduced
+            # one layer above the meter. True peak is worse: L at +0.99 against
+            # R at -0.99 downmixes to about zero, so a true-peak ceiling would
+            # pass on a file that clips.
+            await client.execute_long("Export2", Filename=tmp_wav)
             if not os.path.exists(tmp_wav):
                 job["steps_failed"].append(
                     f"measurement: no file at {tmp_wav}. If Audacity is showing a "
@@ -286,7 +298,12 @@ def register(mcp: FastMCP):
 
         peak_db = measured["peak_db"]
         noise_db = measured["noise_floor_db"]
-        job["steps_applied"].append(f"measured: peak={peak_db}dB noise={noise_db}dB")
+        # Named as the check it is. steps_applied feeds steps_completed and the
+        # result message, so a bare "measured: ..." reads there as a processing
+        # step the pipeline applied to the audio, which it is not.
+        job["steps_applied"].append(
+            f"loudness check: peak={peak_db}dB noise={noise_db}dB"
+        )
 
         if peak_db > peak_target:
             # Peaks are too hot — bring them DOWN to target (reduce only, never boost)
@@ -668,7 +685,10 @@ def register(mcp: FastMCP):
         try:
             await client.execute("Stop")
             await _select_all()
-            export_result = await client.execute_long("Export2", Filename=tmp_wav, NumChannels=1)
+            # No NumChannels, for the same reason as _measure_current_audio: a
+            # forced mono downmix would put the reported LUFS and true peak
+            # around 3 dB away from what the project actually is.
+            export_result = await client.execute_long("Export2", Filename=tmp_wav)
 
             if not os.path.exists(tmp_wav):
                 measurement_error = (
@@ -995,10 +1015,15 @@ def register(mcp: FastMCP):
                     },
                 ))
 
+            # These are what the pipeline aimed at, not what it achieved. The
+            # old wording claimed "ACX/Audible compliant" unconditionally, in
+            # the same reply that could carry a measured rms of "missed" - and
+            # nothing in this pipeline normalises RMS to -20 dB, it compresses,
+            # reduces peaks and limits. measurement.targets is the verdict.
             await _complete_job(job, "Audiobook Mastering Complete (ACX)", {
-                "rms": "-20 dB RMS",
+                "rms": "aimed at -20 dB RMS",
                 "peak_cap": "-3.5 dB",
-                "standard": "ACX/Audible compliant",
+                "standard": "ACX targets applied; see measurement.targets for the verdict",
             })
         except Exception as e:
             job["status"] = "error"
@@ -1248,11 +1273,16 @@ def register(mcp: FastMCP):
                 Costs two extra exports. Set False on very long projects.
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
+        # Normalised before the job name is built, not after: the name is what
+        # for_pipeline looks up, so style="EDM" used to produce "mastering_EDM",
+        # match no target spec, and return an empty targets block - identical to
+        # a pipeline that declares no target, so the caller could not tell a
+        # silently dropped check from one that was never declared.
+        style = style.lower().strip()
+
         job_id, job, conflict = await _create_job(f"mastering_{style}", verify=verify)
         if job is None:
             return conflict
-
-        style = style.lower().strip()
 
         presets = {
             "edm": {

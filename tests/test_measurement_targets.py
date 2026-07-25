@@ -1,7 +1,8 @@
 import pytest
 
-from audacity_mcp.measurement import targets
-from audacity_mcp.measurement.report import check_targets, delta
+from audacity_mcp.measurement import LOUDNESS_AVAILABLE, targets
+from audacity_mcp.measurement.report import check_targets, delta, measure_file
+from tests.measurement_signals import sine, write_signal
 
 
 def measurement(**over):
@@ -19,19 +20,28 @@ def measurement(**over):
 class TestSpecs:
     def test_every_auto_pipeline_is_covered_or_explicitly_none(self):
         """A pipeline with no entry at all is an oversight; one mapped to None
-        is a decision. The dict must distinguish them."""
+        is a decision. The dict must distinguish them.
+
+        Compared with `==`, not `<=`. A subset check only looks in one
+        direction, so it cannot see a key no pipeline can produce - and that is
+        what happened: SPECS carried "lofi_effect" while auto_lofi_effect names
+        its job f"lofi_{intensity}", so the entry was unreachable and this test
+        passed anyway. An unreachable key is the same defect as a missing one,
+        because a lookup miss and an explicit None are both None downstream.
+        """
         expected = {
             "podcast_cleanup", "audiobook_mastering", "interview_cleanup",
             "vocal_cleanup", "live_cleanup", "cleanup_audio",
             "mastering_edm", "mastering_hiphop", "mastering_rock",
             "mastering_pop", "mastering_classical", "mastering_acoustic",
-            "lofi_effect",
+            "lofi_light", "lofi_medium", "lofi_heavy",
         }
-        assert expected <= set(targets.SPECS)
+        assert set(targets.SPECS) == expected
 
     def test_cleanup_and_lofi_have_no_target(self):
         assert targets.SPECS["cleanup_audio"] is None
-        assert targets.SPECS["lofi_effect"] is None
+        for intensity in ("light", "medium", "heavy"):
+            assert targets.SPECS[f"lofi_{intensity}"] is None
 
     def test_acx_spec_matches_the_published_requirement(self):
         spec = targets.SPECS["audiobook_mastering"]
@@ -93,6 +103,29 @@ class TestCheckTargets:
         assert result["peak"]["status"] == "missed"
 
 
+class TestMeasureFile:
+    @pytest.mark.skipif(not LOUDNESS_AVAILABLE, reason="needs the measurement extra")
+    def test_one_loudness_failure_does_not_condemn_the_other(self, tmp_path, monkeypatch):
+        """The two loudness figures are measured separately, so they have to
+        fail separately. Sharing one except clause meant a true-peak failure
+        marked lufs unavailable while the correct lufs value sat in the same
+        dict - telling the reader to disbelieve a number that is right.
+        """
+        from audacity_mcp.measurement import loudness
+
+        def boom(*a, **k):
+            raise RuntimeError("resampler said no")
+
+        monkeypatch.setattr(loudness, "true_peak_dbtp", boom)
+        p = write_signal(tmp_path / "m.wav", [sine(1000, 1.0, amplitude=0.5)])
+        result = measure_file(p)
+
+        assert result["lufs"] is not None
+        assert "lufs" not in result["unavailable"]
+        assert result["true_peak_dbtp"] is None
+        assert "resampler said no" in result["unavailable"]["true_peak"]
+
+
 class TestDelta:
     def test_reports_before_after_and_change(self):
         d = delta(measurement(lufs=-25.0), measurement(lufs=-16.0))
@@ -112,4 +145,20 @@ class TestDelta:
 
     def test_does_not_flag_when_something_moved(self):
         d = delta(measurement(peak_db=-9.0), measurement(peak_db=-3.0))
+        assert d.get("_no_measurable_change") is not True
+
+    def test_a_removed_dc_offset_counts_as_a_change(self):
+        """dc_offset is a fraction of full scale, not dB. Under a single 0.1
+        threshold for every field, a DC offset of 0.06 - which
+        auto_analyze_audio calls a defect above 0.005, and which the DC step
+        removes completely - was reported as no measurable change: the no-op
+        detector calling a working pipeline a no-op.
+        """
+        d = delta(measurement(dc_offset=0.06), measurement(dc_offset=0.0))
+        assert d.get("_no_measurable_change") is not True
+
+    def test_a_count_moves_in_whole_numbers(self):
+        """The other end of the same rule: counts are exact, so the threshold
+        for them is half a unit rather than a tenth of a dB."""
+        d = delta(measurement(click_count=0), measurement(click_count=1))
         assert d.get("_no_measurable_change") is not True

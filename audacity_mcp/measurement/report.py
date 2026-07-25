@@ -13,7 +13,25 @@ _DELTA_FIELDS = (
 
 # Below this, a change is measurement noise rather than an effect doing
 # something. Two exports of an untouched project do not agree bit for bit.
-_NOISE_FLOOR_DB = 0.1
+#
+# Per field, because the fields are not in the same unit. A single threshold of
+# 0.1 dB applied to everything meant a DC offset of 0.06 - which
+# auto_analyze_audio flags as a defect above 0.005, and which the DC step
+# removes completely - counted as "no measurable change", while one extra
+# clipped sample counted as the pipeline having done something.
+_SIGNIFICANT_CHANGE = {
+    "peak_db": 0.1,
+    "rms_db": 0.1,
+    "noise_floor_db": 0.1,
+    "lufs": 0.1,
+    "true_peak_dbtp": 0.1,
+    "dynamic_range_db": 0.1,
+    "dc_offset": 0.001,        # a fraction of full scale, not dB
+    "clipped_samples": 0.5,    # counts: any real change is at least 1
+    "click_count": 0.5,
+    "silence_gap_count": 0.5,
+}
+_DEFAULT_SIGNIFICANT_CHANGE = 0.1
 
 
 def measure_file(path: str, dual_mono: bool = True) -> dict:
@@ -31,12 +49,18 @@ def measure_file(path: str, dual_mono: bool = True) -> dict:
 
     from .loudness import integrated_lufs, true_peak_dbtp
 
+    # Separately, so a failure in one does not report the other as unavailable
+    # while its value sits right there in the same dict. A report that carries a
+    # real LUFS number and a claim that LUFS could not be measured is telling
+    # the reader to disbelieve a number that is correct.
     try:
         result["lufs"] = integrated_lufs(path, dual_mono=dual_mono)
+    except Exception as e:
+        result["unavailable"]["lufs"] = f"{type(e).__name__}: {e}"
+    try:
         result["true_peak_dbtp"] = true_peak_dbtp(path)
     except Exception as e:
-        reason = f"{type(e).__name__}: {e}"
-        result["unavailable"] = {"lufs": reason, "true_peak": reason}
+        result["unavailable"]["true_peak"] = f"{type(e).__name__}: {e}"
     return result
 
 
@@ -55,7 +79,8 @@ def delta(before: dict, after: dict) -> dict:
             continue
         change = round(a - b, 3)
         out[field] = {"before": b, "after": a, "change": change}
-        if abs(change) > _NOISE_FLOOR_DB:
+        threshold = _SIGNIFICANT_CHANGE.get(field, _DEFAULT_SIGNIFICANT_CHANGE)
+        if abs(change) > threshold:
             moved = True
     if out and not moved:
         out["_no_measurable_change"] = True

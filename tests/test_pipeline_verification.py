@@ -74,6 +74,33 @@ class TestMeasurementBlock:
         assert status["measurement"]["verified"] is False
         assert status["measurement"]["before"] is None
         assert status["measurement"]["after"] is None
+        # The point of verify=False is not measuring, not discarding the
+        # measurement. Asserting only that before and after are None would hold
+        # just as well if both exports ran and their results were thrown away,
+        # which is the whole cost the flag exists to avoid.
+        assert exporting_client.state["exports"] == 0
+
+    def test_the_measurement_export_keeps_the_project_channels(
+        self, tools, exporting_client
+    ):
+        """Forcing NumChannels=1 measures a mono downmix of a stereo project.
+
+        On uncorrelated stereo that reads about 3 dB from the truth, which is
+        the exact error the dual-mono convention exists to avoid, reintroduced
+        above the meter. True peak is worse: L at +0.99 against R at -0.99
+        downmixes to about zero, so a ceiling check passes on a file that clips.
+        """
+        run_to_completion(tools, "auto_cleanup_audio")
+        exports = [
+            c for c in exporting_client.execute_long.call_args_list
+            if c.args and c.args[0] == "Export2"
+        ]
+        assert exports, "no export was made at all"
+        for call in exports:
+            assert "NumChannels" not in call.kwargs, (
+                "the measurement export must carry the project's own channel "
+                f"count, got NumChannels={call.kwargs.get('NumChannels')}"
+            )
 
     def test_no_measurable_change_is_flagged(self, tools):
         """Both exports produce the identical signal, so nothing moved. A
@@ -90,6 +117,17 @@ class TestTargets:
     def test_cleanup_audio_declares_no_target(self, tools):
         status = run_to_completion(tools, "auto_cleanup_audio")
         assert status["measurement"]["targets"] == {}
+
+    def test_a_style_in_the_wrong_case_still_gets_its_target_checked(self, tools):
+        """The job name is what for_pipeline looks up. Building it before the
+        style is normalised produced "mastering_EDM", which matches no spec and
+        returns an empty targets block - indistinguishable from a pipeline that
+        declares no target, so a silently dropped check reads as a decision.
+        """
+        status = run_to_completion(tools, "auto_master_music", style="EDM")
+        assert status["measurement"]["targets"], (
+            "an uppercase style dropped the whole target check"
+        )
 
 
 class TestStepRecords:
@@ -112,6 +150,30 @@ class TestStepRecords:
         failed = [s for s in status["steps"] if not s["ok"]]
         assert failed, "a raising step was recorded as ok"
         assert any("boom" in (s["noop_reason"] or "") for s in failed)
+
+    def test_a_step_audacity_refused_is_not_reported_as_completed(
+        self, tools, exporting_client
+    ):
+        """steps_completed and the result message are both built from
+        steps_applied, so a step Audacity refused used to be named in two
+        places as having run. "A step that failed must never look like one that
+        ran" is the same rule as the one about measurements.
+        """
+        async def _refuse(command, extra_params=None, **params):
+            if command == "High-passFilter":
+                return {"success": False, "raw": "", "message": "no", "data": {}}
+            if command == "Export2":
+                write_signal(params["Filename"], [sine(1000, 1.0)])
+            return {"success": True, "raw": "", "message": "", "data": {}}
+        exporting_client.execute_long.side_effect = _refuse
+
+        status = run_to_completion(tools, "auto_cleanup_audio")
+        hpf = [s for s in status["steps"] if s["name"].startswith("HPF")]
+        assert hpf and not hpf[0]["ok"], "the refused step was recorded as ok"
+        assert not any(s.startswith("HPF") for s in status["steps_completed"]), (
+            f"a refused step is named in steps_completed: {status['steps_completed']}"
+        )
+        assert "HPF" not in status["result"]["message"]
 
 
 class TestMeasurementFailureIsHonest:

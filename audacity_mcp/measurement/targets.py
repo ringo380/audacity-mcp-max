@@ -76,7 +76,13 @@ SPECS: dict[str, TargetSpec | None] = {
     # compression, no normalize - and a creative effect has no correctness
     # target to check against. Both report delta only.
     "cleanup_audio": None,
-    "lofi_effect": None,
+    # auto_lofi_effect names its job f"lofi_{intensity}", so "lofi_effect" was
+    # a key nothing could ever look up. It read as a decision ("lo-fi declares
+    # no target") while actually being a miss, and the two are indistinguishable
+    # downstream because a missing key also returns None.
+    "lofi_light": None,
+    "lofi_medium": None,
+    "lofi_heavy": None,
 }
 
 
