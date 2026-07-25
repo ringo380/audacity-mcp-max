@@ -56,7 +56,7 @@ audacity_mcp/measurement/
 │                  dynamic range, percentile noise floor
 ├── loudness.py    BS.1770-4 gated LUFS + oversampled true peak (needs the extra)
 ├── targets.py     named target specs per pipeline
-└── report.py      Measurement, delta(), check_targets(), to_dict()
+└── report.py      measure_file(), delta(), check_targets()
 ```
 
 `audacity_mcp_shared/` is deliberately untouched. It is stdlib-only so the Win32
@@ -71,8 +71,8 @@ today's struct-unpack loop when it is not.
 sake. Iterating a numpy array element by element in Python is *slower* than
 iterating a list, so a single Python loop above a numpy reader would make the
 optional extra actively worse at this half of the job: measured on this machine,
-a one-hour mono file costs around 70 seconds per pass in the Python loop, and a
-verified pipeline runs two passes. Both accumulators fill the same state object
+an hour of 44.1 kHz stereo costs about 160 seconds per pass in the Python loop
+against about one second vectorised, and a verified pipeline runs two passes. Both accumulators fill the same state object
 and the tests assert the two produce identical answers over one file, so the
 duplication is guarded rather than trusted.
 
@@ -150,7 +150,9 @@ client.
 Two mechanisms:
 
 1. **Reply-level.** `_run_pipeline_step` records each step into `job["steps"]` as
-   `{name, ok, reply, noop_reason}`, flagging failures and empty replies.
+   `{name, ok, noop_reason}`, flagging failures and empty replies. The reply
+   itself is not kept: it is Audacity's raw text, and the outcome is what a
+   caller can act on.
 2. **Whole-pipeline.** If the entry/exit delta shows nothing moved, the report
    says so.
 

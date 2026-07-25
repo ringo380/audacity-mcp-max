@@ -28,8 +28,15 @@ class AudioInfo:
 # int32 and float32 are both 4 bytes - so the container reader tells us which
 # via its `sample_format`. Decoding int32 bytes as float (or the reverse) reads
 # as garbage but succeeds, which is why the two are kept apart here.
+# struct has no three-byte integer, so 24-bit PCM carries this sentinel instead
+# of a struct format character and both decoders special-case it. Audacity's
+# export dialog offers "Signed 24-bit PCM" and its exporter is sticky, so a user
+# who chose it once keeps producing it - the same way the float32 case arises.
+_INT24 = "i24"
+
 _FORMATS = {
     (2, False): ("h", 32768.0),
+    (3, False): (_INT24, 8388608.0),
     (4, False): ("i", 2147483648.0),
     (4, True): ("f", 1.0),
 }
@@ -105,8 +112,15 @@ def _decode_stdlib(raw, frames, channels, fmt_char, max_val):
     # from the stdlib backend only, so the measurement would succeed or fail
     # depending on which optional extra is installed.
     n = frames * channels
-    raw = raw[: n * struct.calcsize(fmt_char)]
-    flat = struct.unpack(f"<{n}{fmt_char}", raw)
+    if fmt_char == _INT24:
+        raw = raw[: n * 3]
+        flat = [
+            int.from_bytes(raw[i:i + 3], "little", signed=True)
+            for i in range(0, len(raw), 3)
+        ]
+    else:
+        raw = raw[: n * struct.calcsize(fmt_char)]
+        flat = struct.unpack(f"<{n}{fmt_char}", raw)
     return [[flat[i] / max_val for i in range(c, len(flat), channels)]
             for c in range(channels)]
 
@@ -117,7 +131,17 @@ if HAVE_NUMPY:
     _DTYPES = {"h": "<i2", "i": "<i4", "f": "<f4"}
 
     def _decode_numpy(raw, frames, channels, fmt_char, max_val):
-        flat = _np.frombuffer(raw, dtype=_DTYPES[fmt_char], count=frames * channels)
+        n = frames * channels
+        if fmt_char == _INT24:
+            # Widen each little-endian 3-byte sample into the high three bytes
+            # of an int32 and shift back down, so the arithmetic shift carries
+            # the sign for us rather than testing the top bit per sample.
+            triples = _np.frombuffer(raw, dtype=_np.uint8, count=n * 3).reshape(-1, 3)
+            wide = _np.zeros((triples.shape[0], 4), dtype=_np.uint8)
+            wide[:, 1:] = triples
+            flat = wide.view("<i4").reshape(-1) >> 8
+        else:
+            flat = _np.frombuffer(raw, dtype=_DTYPES[fmt_char], count=n)
         arr = flat.astype(_np.float64) / max_val
         # (frames, channels) -> a list of per-channel 1-D views.
         return [_np.ascontiguousarray(arr[c::channels]) for c in range(channels)]

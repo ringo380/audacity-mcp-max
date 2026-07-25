@@ -9,8 +9,9 @@ Two backends, and the numpy one is not an optimisation for its own sake:
 reader.py hands this module numpy arrays whenever the extra is installed, and
 iterating a numpy array element by element in Python is SLOWER than iterating a
 list. Without a vectorised path the extra would make this half of the
-measurement worse than not having it. Measured on a one-hour mono file, the
-Python loop is around 70 seconds per pass, and a verified pipeline runs two.
+measurement worse than not having it. Measured on this machine at 44.1 kHz
+stereo, the Python loop costs about 160 seconds per hour of audio per pass
+against about one second vectorised, and a verified pipeline runs two passes.
 
 Both backends fill the same accumulator fields, so the tests assert the two give
 identical answers rather than each being checked in isolation.

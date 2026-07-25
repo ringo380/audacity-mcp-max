@@ -9,6 +9,7 @@ All notable changes to audacity-mcp-max will be documented in this file.
 - Pipelines now report what they actually did. Every `auto_` pipeline measures the audio before and after itself and returns a `measurement` block through `check_pipeline_status` with before, after, the delta, and its declared target. A run that moved nothing says so instead of returning the same completion string as a run that worked. Pass `verify=False` to skip the two exports on a very long project. (docs/design/2026-07-24-measurement-verification-core.md)
 - LUFS and true peak, via a new optional `measurement` extra (`uv sync --extra measurement`). Integrated loudness follows ITU-R BS.1770-4 and is validated against the EBU Tech 3341 compliance cases rather than against itself; true peak uses 4x oversampling per Annex 2. Without the extra these read `null` and any target depending on them reports `unknown` rather than `missed` - a target that could not be checked is not a target that failed. `/audacity:doctor` reports whether the extra is present. (docs/design/2026-07-24-measurement-verification-core.md)
 - `auto_analyze_audio` returns `lufs` and `true_peak_dbtp`. (docs/design/2026-07-24-measurement-verification-core.md)
+- Measurement reads 24-bit PCM WAV. Audacity's export dialog offers "Signed 24-bit PCM" and its exporter is sticky, so a user who chose it once keeps producing it; that width previously failed outright and took the whole measurement with it. (docs/design/2026-07-24-measurement-verification-core.md)
 
 ### Fixed
 

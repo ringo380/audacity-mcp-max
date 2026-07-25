@@ -492,7 +492,7 @@ once the job reaches `complete` or `error`:
 | `before` | Full measurement of the audio at pipeline start, or `null` if `verify=False` or the export failed. |
 | `after` | Full measurement of the audio at pipeline end, same rules as `before`. |
 | `delta` | Per-field `{before, after, change}` for whatever both measurements share; a field missing from either side is skipped, not reported as zero change. Includes `_no_measurable_change: true` when every measured field moved less than the noise floor. |
-| `targets` | This pipeline's declared targets (see below), each `met`, `missed`, or `unknown`. Empty for pipelines with no declared target (`auto_cleanup_audio`, `auto_lofi_effect`). |
+| `targets` | This pipeline's declared targets (see below), each `met`, `missed`, or `unknown`. Empty for pipelines with no declared target (`auto_cleanup_audio`, `auto_lofi_effect`), and also empty when the exit measurement failed - check `after` and `warnings` before reading `{}` as "nothing to check". |
 | `capability` | What this install can measure - `numpy`, `scipy`, `loudness`, and `reason` if loudness is unavailable. |
 
 Each entry in `targets` (keyed `lufs`, `true_peak`, `rms`, `peak`, or

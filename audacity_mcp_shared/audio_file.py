@@ -277,10 +277,14 @@ def open_pcm(path: str):
         try:
             return wave.open(path, "rb")
         except (wave.Error, EOFError):
-            # wave rejects any non-PCM tag (float is tag 3) with wave.Error, and
-            # trips over a WAVE_FORMAT_EXTENSIBLE fmt chunk with EOFError.
-            # Audacity's sticky exporter can leave a project emitting 32-bit
-            # float WAV, so parse that ourselves rather than failing the
+            # wave.Error covers both float cases: a bare IEEE float tag (3) and
+            # a WAVE_FORMAT_EXTENSIBLE header whose SubFormat GUID is float,
+            # which it reports as "unknown extended format". An EXTENSIBLE
+            # header carrying a PCM GUID opens normally and never reaches here.
+            # EOFError is the truncated-header case, where nothing has been
+            # established about the format yet, so it is worth the second look
+            # too. Audacity's sticky exporter can leave a project emitting
+            # 32-bit float WAV, so parse that ourselves rather than failing the
             # measurement.
             return FloatWavReader(path)
     if container == "aiff":

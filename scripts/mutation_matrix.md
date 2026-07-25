@@ -55,6 +55,42 @@ not - see "What the zero rows turned out to be" below.
 | 15 | Backends agree (numpy) | Count clicks over the flattened array, not per channel | guarded | `TestBackendsAgree::test_click_counting_is_per_channel_in_both` |
 | 16 | Per-channel click state (stdlib) | Share one carry-over sample across channels | guarded (new test) | `TestBackendsAgree::test_click_state_does_not_leak_between_channels_across_blocks` |
 
+### Second pass: the whole-branch review's fixes
+
+A review of the finished branch found defects that no per-task review could see,
+because each was a seam between two tasks. Their fixes carry guards of their
+own, mutation-checked the same way against the same green baseline (355 passed,
+4 skipped). Every row fails its own test and nothing else - except the last,
+which correctly takes both tests that name the key.
+
+| Rule | Mutation | Verdict | Test that caught it |
+|------|----------|---------|---------------------|
+| The measurement export carries the project's channels | Put `NumChannels=1` back | guarded | `TestMeasurementBlock::test_the_measurement_export_keeps_the_project_channels` |
+| A refused step is not reported as applied | Append to `steps_applied` before the failure branch | guarded | `TestStepRecords::test_a_step_audacity_refused_is_not_reported_as_completed` |
+| The style is normalised before the job name is built | Move `style.lower()` back below `_create_job` | guarded | `TestTargets::test_a_style_in_the_wrong_case_still_gets_its_target_checked` |
+| Change thresholds are per field | Give `dc_offset` the 0.1 dB threshold again | guarded | `TestDelta::test_a_removed_dc_offset_counts_as_a_change` |
+| The two loudness figures fail independently | Share one `except` across both | guarded | `TestMeasureFile::test_one_loudness_failure_does_not_condemn_the_other` |
+| Every target key is reachable | Restore the unreachable `lofi_effect` key | guarded (2 tests) | `TestSpecs::test_every_auto_pipeline_is_covered_or_explicitly_none`, `::test_cleanup_and_lofi_have_no_target` |
+
+The memory fix in the same wave is guarded separately, by two tests that
+synthesise twenty minutes of audio straight into the block iterator and assert
+the measurement does not grow with it. Restoring the whole-file loader fails
+both and nothing else.
+
+Three of these are worth naming as a pattern, because each was a test that
+looked like it covered the rule:
+
+- The `verify=False` test asserted only that `before` and `after` were `None`,
+  which holds just as well if both exports ran and the results were discarded -
+  and the entire point of the flag is not paying for the exports. It now asserts
+  the export count is zero, which the fixture could always have told it.
+- The target-coverage test compared with `<=`. A subset check looks in one
+  direction only, so it could see a missing key but never a wrong one, and a key
+  no pipeline can produce is the same defect as a missing one: both are `None`
+  at the lookup. It now compares exactly.
+- The per-channel click test used a fifth of a second of audio, so it never
+  reached a second block, and the rule it names only bites at a block boundary.
+
 ### Row 14 is not in this table
 
 Row 14 was to be "the export metadata dialog preference reads `unknown` when

@@ -8,6 +8,18 @@ from audacity_mcp.measurement.reader import read_audio, UnreadableAudio
 from tests.measurement_signals import sine, write_signal
 
 
+def write_int24(path, values, rate=8000):
+    """A mono 24-bit PCM WAV, little-endian, three bytes per sample."""
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(3)
+        wf.setframerate(rate)
+        wf.writeframes(b"".join(
+            int(v).to_bytes(3, "little", signed=True) for v in values
+        ))
+    return str(path)
+
+
 def write_int32(path, values, rate=8000):
     """A mono 32-bit *integer* PCM WAV. wave refuses IEEE-float WAV, so this is
     the only 4-byte file the reader ever actually sees."""
@@ -76,6 +88,34 @@ class TestSampleWidths:
         _, blocks = read_audio(p, block_frames=8000)
         got = [round(float(v), 4) for b in blocks for v in b[0]]
         assert got == [1.0, -1.0, 0.0, 0.5]
+
+    def test_int24_pcm_normalises_to_unit_range(self, tmp_path):
+        """Audacity's export dialog offers "Signed 24-bit PCM" and its exporter
+        is sticky, so a user who picked it once keeps producing it. struct has
+        no three-byte integer, which is why this width used to fail outright and
+        take the whole measurement with it.
+        """
+        p = write_int24(tmp_path / "i24.wav",
+                        [8388607, -8388608, 0, 4194304])
+        _, blocks = read_audio(p, block_frames=8000)
+        got = [round(float(v), 4) for b in blocks for v in b[0]]
+        assert got == [1.0, -1.0, 0.0, 0.5]
+
+    def test_both_int24_decoders_agree(self, tmp_path, monkeypatch):
+        """The sign extension is written twice, once per backend, so nothing but
+        a direct comparison catches them drifting apart. The negative values are
+        the point: a byte-order or sign slip reads them as large positives."""
+        if not reader_mod.HAVE_NUMPY:
+            pytest.skip("only one backend available on this install")
+        values = [8388607, -8388608, -1, 0, 1, -4194304, 4194304]
+        p = write_int24(tmp_path / "i24b.wav", values)
+
+        monkeypatch.setattr(reader_mod, "_decode", reader_mod._decode_numpy)
+        fast = [float(v) for b in read_audio(p, block_frames=8000)[1] for v in b[0]]
+        monkeypatch.setattr(reader_mod, "_decode", reader_mod._decode_stdlib)
+        slow = [float(v) for b in read_audio(p, block_frames=8000)[1] for v in b[0]]
+        assert fast == slow
+        assert slow == [pytest.approx(v / 8388608.0) for v in values]
 
     def test_float32_wav_is_read_as_float_not_int32(self, tmp_path):
         """int32 and float32 are both 4 bytes; the container reader says which.
