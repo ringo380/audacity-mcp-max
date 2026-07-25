@@ -5,7 +5,13 @@ import time
 import uuid
 
 from mcp.server.fastmcp import FastMCP
-from audacity_mcp.measurement import describe_capability, measure_file
+from audacity_mcp.measurement import (
+    check_targets as _check_targets,
+    delta as _delta,
+    describe_capability,
+    for_pipeline as _target_for,
+    measure_file,
+)
 from audacity_mcp.measurement.reader import UnreadableAudio
 from audacity_mcp_shared.error_codes import AudacityMCPError, ErrorCode
 
@@ -55,12 +61,6 @@ def register(mcp: FastMCP):
         await client.execute("SelAllTracks")
         await client.execute("SelectAll")
 
-    async def _show_completion_popup(title: str, details: str):
-        """No-op — popups removed because NyquistPrompt shows blocking dialogs
-        that require the user to click OK (sometimes twice). The AI already
-        reports results through the MCP response."""
-        pass
-
     def _find_running_job() -> tuple[str | None, dict | None, str]:
         """Return (job_id, job, kind) for whatever is running, or (None, None, "")."""
         for job_id, job in _jobs.items():
@@ -91,7 +91,9 @@ def register(mcp: FastMCP):
             "message": "Use check_pipeline_status to monitor the existing pipeline.",
         }
 
-    async def _create_job(pipeline_name: str) -> tuple[str | None, dict | None, dict | None]:
+    async def _create_job(
+        pipeline_name: str, verify: bool = True
+    ) -> tuple[str | None, dict | None, dict | None]:
         """Create a job dict and return (job_id, job, None).
 
         On a conflict returns (None, None, error_dict). The conflicting job is
@@ -110,15 +112,53 @@ def register(mcp: FastMCP):
                 "current_step": "starting",
                 "steps_applied": [],
                 "steps_failed": [],
+                "steps": [],
                 "started_at": time.time(),
                 "result": None,
                 "error": None,
+                "verify": verify,
+                "measurement": {
+                    "verified": verify,
+                    "before": None,
+                    "after": None,
+                    "delta": {},
+                    "targets": {},
+                },
             }
             _jobs[job_id] = job
             return job_id, job, None
 
+    async def _begin_pipeline(job: dict):
+        """Transport precondition and entry measurement.
+
+        Stop first: Audacity refuses scripted commands while transport is
+        playing or paused, and every one of those refusals looks exactly like a
+        dead pipe. Stop is idempotent, so this costs nothing when it was already
+        stopped and removes the whole failure class when it was not.
+        """
+        try:
+            await client.execute("Stop")
+        except Exception as e:
+            job["steps_failed"].append(f"stop transport: {e}")
+        if job.get("verify"):
+            job["current_step"] = "measuring before"
+            job["measurement"]["before"] = await _measure_current_audio(job)
+
     async def _complete_job(job: dict, label: str, targets: dict):
-        """Mark job complete, build result, show popup."""
+        """Mark job complete, measure the result, build the report."""
+        if job.get("verify"):
+            job["current_step"] = "measuring after"
+            job["measurement"]["after"] = await _measure_current_audio(job)
+
+        before = job["measurement"]["before"]
+        after = job["measurement"]["after"]
+        if before and after:
+            job["measurement"]["delta"] = _delta(before, after)
+        if after:
+            job["measurement"]["targets"] = _check_targets(
+                after, _target_for(job["pipeline"])
+            )
+
         elapsed = round(time.time() - job["started_at"], 1)
         job["status"] = "complete"
         job["current_step"] = "done"
@@ -131,22 +171,25 @@ def register(mcp: FastMCP):
         if job["steps_failed"]:
             job["result"]["warnings"] = job["steps_failed"].copy()
 
-        target_str = ", ".join(f"{k}: {v}" for k, v in targets.items())
-        await _show_completion_popup(
-            label,
-            f"Steps: {' > '.join(job['steps_applied'])}\\n"
-            f"Target: {target_str}\\n"
-            f"Time: {elapsed}s",
-        )
+    def _record_step(job: dict, name: str, ok: bool, noop_reason: str | None = None):
+        job["steps"].append({"name": name, "ok": ok, "noop_reason": noop_reason})
 
     async def _run_pipeline_step(job: dict, name: str, coro):
         """Run a single pipeline step with error handling and job tracking."""
         job["current_step"] = name
         try:
-            await coro
+            reply = await coro
             job["steps_applied"].append(name)
+            noop = None
+            if isinstance(reply, dict) and reply.get("success") is False:
+                noop = f"Audacity reported failure: {reply.get('message', '')}"
+                job["steps_failed"].append(f"{name}: {noop}")
+                _record_step(job, name, False, noop)
+            else:
+                _record_step(job, name, True, None)
         except Exception as e:
             job["steps_failed"].append(f"{name}: {e}")
+            _record_step(job, name, False, str(e))
         await asyncio.sleep(_STEP_DELAY)
 
     async def _noise_reduction_step(job: dict, reduction_db: float = 12, sensitivity: float = 6, smoothing: int = 3):
@@ -562,6 +605,17 @@ def register(mcp: FastMCP):
             result["error"] = job["error"]
         if job["steps_failed"]:
             result["warnings"] = job["steps_failed"].copy()
+        if job.get("steps"):
+            result["steps"] = [s.copy() for s in job["steps"]]
+        if job["status"] in ("complete", "error") and job.get("measurement"):
+            result["measurement"] = {
+                "verified": job["measurement"]["verified"],
+                "before": job["measurement"]["before"],
+                "after": job["measurement"]["after"],
+                "delta": job["measurement"]["delta"],
+                "targets": job["measurement"]["targets"],
+                "capability": describe_capability(),
+            }
         return result
 
     # ── auto_analyze_audio (synchronous) ──────────────────────────────
@@ -800,6 +854,7 @@ def register(mcp: FastMCP):
 
     async def _cleanup_audio_pipeline(job: dict, remove_noise: bool, remove_clicks: bool):
         try:
+            await _begin_pipeline(job)
             await _dc_offset_step(job)
             await _hpf_step(job, 80.0)
 
@@ -820,6 +875,7 @@ def register(mcp: FastMCP):
     async def auto_cleanup_audio(
         remove_noise: bool = True,
         remove_clicks: bool = False,
+        verify: bool = True,
     ) -> dict:
         """SAFE CLEANUP: Remove noise and artifacts WITHOUT changing loudness or dynamics.
         Use this when audio levels are already good and you just want to clean it up.
@@ -831,11 +887,13 @@ def register(mcp: FastMCP):
         Args:
             remove_noise: Apply noise reduction using first 0.5s as noise profile. Default: True
             remove_clicks: Remove clicks/pops (useful for vinyl/old recordings). Default: False
+            verify: Measure the audio before and after and report what changed.
+                Costs two extra exports. Set False on very long projects.
 
         IMPORTANT: If remove_noise is True, the first 0.5 seconds should be room tone / silence.
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job, conflict = await _create_job("cleanup_audio")
+        job_id, job, conflict = await _create_job("cleanup_audio", verify=verify)
         if job is None:
             return conflict
         coro = _cleanup_audio_pipeline(job, remove_noise, remove_clicks)
@@ -846,6 +904,7 @@ def register(mcp: FastMCP):
 
     async def _podcast_pipeline(job: dict, remove_noise: bool, remove_silence: bool):
         try:
+            await _begin_pipeline(job)
             await _dc_offset_step(job)
             await _hpf_step(job, 80.0)
 
@@ -875,6 +934,7 @@ def register(mcp: FastMCP):
     async def auto_cleanup_podcast(
         remove_noise: bool = True,
         remove_silence: bool = False,
+        verify: bool = True,
     ) -> dict:
         """ONE-CLICK PODCAST CLEANUP: Professional broadcast-quality processing.
         Runs in background — returns a job_id immediately. Use check_pipeline_status to monitor.
@@ -889,11 +949,13 @@ def register(mcp: FastMCP):
         Args:
             remove_noise: Apply noise reduction using first 0.5s as noise profile. Default: True
             remove_silence: Truncate long silences/dead air. Default: False
+            verify: Measure the audio before and after and report what changed.
+                Costs two extra exports. Set False on very long projects.
 
         IMPORTANT: If remove_noise is True, the first 0.5 seconds should be room tone / silence.
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job, conflict = await _create_job("podcast_cleanup")
+        job_id, job, conflict = await _create_job("podcast_cleanup", verify=verify)
         if job is None:
             return conflict
         coro = _podcast_pipeline(job, remove_noise, remove_silence)
@@ -904,6 +966,7 @@ def register(mcp: FastMCP):
 
     async def _audiobook_pipeline(job: dict, remove_noise: bool):
         try:
+            await _begin_pipeline(job)
             await _dc_offset_step(job)
             await _hpf_step(job, 80.0)
 
@@ -944,6 +1007,7 @@ def register(mcp: FastMCP):
     @mcp.tool()
     async def auto_audiobook_mastering(
         remove_noise: bool = True,
+        verify: bool = True,
     ) -> dict:
         """ONE-CLICK AUDIOBOOK MASTERING: ACX/Audible compliant processing.
         Runs in background — returns a job_id immediately. Use check_pipeline_status to monitor.
@@ -953,11 +1017,13 @@ def register(mcp: FastMCP):
 
         Args:
             remove_noise: Apply noise reduction using first 0.5s as noise profile. Default: True
+            verify: Measure the audio before and after and report what changed.
+                Costs two extra exports. Set False on very long projects.
 
         IMPORTANT: If remove_noise is True, the first 0.5 seconds should be room tone / silence.
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job, conflict = await _create_job("audiobook_mastering")
+        job_id, job, conflict = await _create_job("audiobook_mastering", verify=verify)
         if job is None:
             return conflict
         coro = _audiobook_pipeline(job, remove_noise)
@@ -968,6 +1034,7 @@ def register(mcp: FastMCP):
 
     async def _interview_pipeline(job: dict, remove_noise: bool, remove_silence: bool):
         try:
+            await _begin_pipeline(job)
             await _dc_offset_step(job)
             await _hpf_step(job, 80.0)
 
@@ -997,6 +1064,7 @@ def register(mcp: FastMCP):
     async def auto_cleanup_interview(
         remove_noise: bool = True,
         remove_silence: bool = False,
+        verify: bool = True,
     ) -> dict:
         """ONE-CLICK INTERVIEW CLEANUP: Light-touch processing for dialogue and multiple speakers.
         Runs in background — returns a job_id immediately. Use check_pipeline_status to monitor.
@@ -1007,11 +1075,13 @@ def register(mcp: FastMCP):
         Args:
             remove_noise: Apply noise reduction using first 0.5s as noise profile. Default: True
             remove_silence: Truncate long silences. Default: False
+            verify: Measure the audio before and after and report what changed.
+                Costs two extra exports. Set False on very long projects.
 
         IMPORTANT: If remove_noise is True, the first 0.5 seconds should be room tone / silence.
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job, conflict = await _create_job("interview_cleanup")
+        job_id, job, conflict = await _create_job("interview_cleanup", verify=verify)
         if job is None:
             return conflict
         coro = _interview_pipeline(job, remove_noise, remove_silence)
@@ -1022,6 +1092,7 @@ def register(mcp: FastMCP):
 
     async def _vocal_pipeline(job: dict, remove_noise: bool):
         try:
+            await _begin_pipeline(job)
             await _dc_offset_step(job)
             await _hpf_step(job, 100.0)
 
@@ -1046,6 +1117,7 @@ def register(mcp: FastMCP):
     @mcp.tool()
     async def auto_cleanup_vocal(
         remove_noise: bool = True,
+        verify: bool = True,
     ) -> dict:
         """ONE-CLICK VOCAL CLEANUP: Professional processing for singing and studio vocals.
         Runs in background — returns a job_id immediately. Use check_pipeline_status to monitor.
@@ -1055,11 +1127,13 @@ def register(mcp: FastMCP):
 
         Args:
             remove_noise: Apply noise reduction using first 0.5s as noise profile. Default: True
+            verify: Measure the audio before and after and report what changed.
+                Costs two extra exports. Set False on very long projects.
 
         IMPORTANT: If remove_noise is True, the first 0.5 seconds should be room tone / silence.
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job, conflict = await _create_job("vocal_cleanup")
+        job_id, job, conflict = await _create_job("vocal_cleanup", verify=verify)
         if job is None:
             return conflict
         coro = _vocal_pipeline(job, remove_noise)
@@ -1070,6 +1144,7 @@ def register(mcp: FastMCP):
 
     async def _live_pipeline(job: dict):
         try:
+            await _begin_pipeline(job)
             await _dc_offset_step(job)
             await _hpf_step(job, 100.0)
 
@@ -1092,7 +1167,7 @@ def register(mcp: FastMCP):
             job["error"] = str(e)
 
     @mcp.tool()
-    async def auto_cleanup_live() -> dict:
+    async def auto_cleanup_live(verify: bool = True) -> dict:
         """ONE-CLICK LIVE RECORDING CLEANUP: Aggressive processing for noisy/field recordings.
         Runs in background — returns a job_id immediately. Use check_pipeline_status to monitor.
 
@@ -1100,10 +1175,14 @@ def register(mcp: FastMCP):
         Designed for live performances, field recordings, and noisy environments.
         Noise reduction is always on at 12dB — max safe level before artifacts appear.
 
+        Args:
+            verify: Measure the audio before and after and report what changed.
+                Costs two extra exports. Set False on very long projects.
+
         IMPORTANT: The first 0.5 seconds MUST be room tone / ambient noise for noise profiling.
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job, conflict = await _create_job("live_cleanup")
+        job_id, job, conflict = await _create_job("live_cleanup", verify=verify)
         if job is None:
             return conflict
         coro = _live_pipeline(job)
@@ -1114,6 +1193,7 @@ def register(mcp: FastMCP):
 
     async def _mastering_pipeline(job: dict, p: dict, noise_reduce: bool):
         try:
+            await _begin_pipeline(job)
             await _hpf_step(job, p["hpf_freq"])
 
             # Click removal
@@ -1148,6 +1228,7 @@ def register(mcp: FastMCP):
     async def auto_master_music(
         style: str = "edm",
         noise_reduce: bool = False,
+        verify: bool = True,
     ) -> dict:
         """ONE-CLICK MUSIC MASTERING: Professionally master your music track with genre-tuned settings.
         Runs in background — returns a job_id immediately. Use check_pipeline_status to monitor.
@@ -1163,9 +1244,11 @@ def register(mcp: FastMCP):
         Args:
             style: Genre preset - "edm", "hiphop", "rock", "acoustic", "pop", "classical". Default: "edm"
             noise_reduce: Apply gentle noise reduction. Default: False
+            verify: Measure the audio before and after and report what changed.
+                Costs two extra exports. Set False on very long projects.
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job, conflict = await _create_job(f"mastering_{style}")
+        job_id, job, conflict = await _create_job(f"mastering_{style}", verify=verify)
         if job is None:
             return conflict
 
@@ -1249,6 +1332,7 @@ def register(mcp: FastMCP):
 
     async def _lofi_pipeline(job: dict, p: dict):
         try:
+            await _begin_pipeline(job)
             # HPF — cut low end
             await _hpf_step(job, p["hpf_freq"])
 
@@ -1278,6 +1362,7 @@ def register(mcp: FastMCP):
     @mcp.tool()
     async def auto_lofi_effect(
         intensity: str = "medium",
+        verify: bool = True,
     ) -> dict:
         """CREATIVE LO-FI EFFECT: Apply a vintage/lo-fi sound to your audio.
         Runs in background — returns a job_id immediately. Use check_pipeline_status to monitor.
@@ -1287,10 +1372,12 @@ def register(mcp: FastMCP):
 
         Args:
             intensity: "light" (subtle warmth), "medium" (classic lo-fi), "heavy" (extreme tape sound). Default: "medium"
+            verify: Measure the audio before and after and report what changed.
+                Costs two extra exports. Set False on very long projects.
 
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job, conflict = await _create_job(f"lofi_{intensity}")
+        job_id, job, conflict = await _create_job(f"lofi_{intensity}", verify=verify)
         if job is None:
             return conflict
 
