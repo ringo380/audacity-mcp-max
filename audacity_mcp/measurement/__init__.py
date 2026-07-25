@@ -45,3 +45,18 @@ def describe_capability() -> dict:
         "loudness": False,
         "reason": f"LUFS and true peak need {' and '.join(missing)} - {_INSTALL_HINT}",
     }
+
+
+def __getattr__(name):
+    """Lazy re-exports.
+
+    report.py imports metrics, which imports reader, which reads this module's
+    HAVE_NUMPY - so eager imports here would be circular.
+    """
+    if name in ("measure_file", "delta", "check_targets"):
+        from . import report
+        return getattr(report, name)
+    if name == "for_pipeline":
+        from .targets import for_pipeline
+        return for_pipeline
+    raise AttributeError(name)
