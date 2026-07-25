@@ -118,6 +118,19 @@ class TestClicks:
         assert fast == slow == 2
 
 
+class TestEmptyAudio:
+    def test_zero_frames_do_not_crash(self, tmp_path):
+        """A 0-frame export must not raise from the measurement layer. The
+        deleted _measure_wav returned None for this; the package returns a
+        degenerate dict (loudness fields None) and the tool callers guard on
+        file size before ever reaching it, so an empty export still surfaces as
+        'no measurement' at the tool level rather than a crash."""
+        p = write_signal(tmp_path / "empty.wav", [silence(0.0)])
+        r = compute_metrics(p)
+        assert r["duration"] == 0.0
+        assert r["rms_db"] is None
+
+
 class TestStereo:
     def test_measures_across_both_channels(self, tmp_path):
         """Peak must come from whichever channel is louder, not just the left."""
