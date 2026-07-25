@@ -148,3 +148,33 @@ def integrated_lufs(path: str, dual_mono: bool = True) -> float | None:
         return None
 
     return round(_OFFSET + 10.0 * math.log10(max(z[kept].mean(), 1e-20)), 2)
+
+
+def true_peak_dbtp(path: str, oversample: int = 4) -> float | None:
+    """Peak in dBTP, per BS.1770-4 Annex 2.
+
+    A sample-peak meter misses the crest that falls between two samples, which
+    is exactly what a -1 dBTP ceiling exists to catch: a file that reads -1.0
+    dBFS can reconstruct above 0 in a converter and clip on playback. Annex 2
+    calls for at least 4x oversampling for rates up to 48 kHz.
+    """
+    _require()
+    import numpy as np
+    from scipy.signal import resample_poly
+
+    _, channels = _load_channels(path)
+    if not channels or channels[0].size == 0:
+        return None
+
+    peak = 0.0
+    for ch in channels:
+        if ch.size == 0:
+            continue
+        upsampled = resample_poly(ch, oversample, 1)
+        channel_peak = float(np.max(np.abs(upsampled)))
+        if channel_peak > peak:
+            peak = channel_peak
+
+    if peak <= 1e-10:
+        return None
+    return round(20.0 * math.log10(peak), 2)

@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from audacity_mcp.measurement import LOUDNESS_AVAILABLE
@@ -91,3 +93,36 @@ class TestSilence:
         from audacity_mcp.measurement.loudness import integrated_lufs
         p = write_signal(tmp_path / "z.wav", [silence(5.0, rate=48000)], rate=48000)
         assert integrated_lufs(p) is None
+
+
+class TestTruePeak:
+    def test_matches_sample_peak_on_a_low_frequency_sine(self, tmp_path):
+        """At 100 Hz there is nothing between the samples to find, so true peak
+        and sample peak agree."""
+        from audacity_mcp.measurement.loudness import true_peak_dbtp
+        p = write_signal(
+            tmp_path / "lf.wav",
+            [sine(100, 1.0, rate=48000, amplitude=db_to_amplitude(-6.0))],
+            rate=48000,
+        )
+        assert true_peak_dbtp(p) == pytest.approx(-6.0, abs=0.2)
+
+    def test_finds_an_inter_sample_peak_a_sample_meter_misses(self, tmp_path):
+        """A sine near Nyquist, phase-shifted so no sample lands on a crest.
+        The sample peak reads low; the true peak is the real number, and it is
+        the one a -1 dBTP ceiling is about."""
+        from audacity_mcp.measurement.loudness import true_peak_dbtp
+        from audacity_mcp.measurement.metrics import compute_metrics
+        rate = 48000
+        p = write_signal(
+            tmp_path / "isp.wav",
+            [sine(rate / 4.0, 1.0, rate=rate, amplitude=1.0, phase=math.pi / 4.0)],
+            rate=rate,
+        )
+        sample_peak = compute_metrics(p)["peak_db"]
+        assert true_peak_dbtp(p) > sample_peak + 0.5
+
+    def test_silence_returns_none(self, tmp_path):
+        from audacity_mcp.measurement.loudness import true_peak_dbtp
+        p = write_signal(tmp_path / "z.wav", [silence(1.0, rate=48000)], rate=48000)
+        assert true_peak_dbtp(p) is None
