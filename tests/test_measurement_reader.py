@@ -101,6 +101,28 @@ class TestSampleWidths:
         got = [round(float(v), 4) for b in blocks for v in b[0]]
         assert got == [1.0, -1.0, 0.0, 0.5]
 
+    def test_int24_still_reads_when_wave_cannot_open_extensible(
+        self, tmp_path, monkeypatch
+    ):
+        """24-bit is the width libsndfile most often writes as
+        WAVE_FORMAT_EXTENSIBLE, and `wave` only learned that header in Python
+        3.12 while this project supports 3.10. Without the fallback reading PCM
+        as well as float, 24-bit support is unreachable on the two oldest
+        supported interpreters - the case it was added for."""
+        from tests.test_audio_file import write_extensible_pcm_wav
+
+        p = write_extensible_pcm_wav(
+            tmp_path / "x24.wav", rate=8000, bits=24,
+            samples=[8388607, -8388608, 0, 4194304],
+        )
+        monkeypatch.setattr(
+            wave, "open",
+            lambda *a, **k: (_ for _ in ()).throw(wave.Error("unknown format: 65534")),
+        )
+        _, blocks = read_audio(p, block_frames=8000)
+        got = [round(float(v), 4) for b in blocks for v in b[0]]
+        assert got == [1.0, -1.0, 0.0, 0.5]
+
     def test_both_int24_decoders_agree(self, tmp_path, monkeypatch):
         """The sign extension is written twice, once per backend, so nothing but
         a direct comparison catches them drifting apart. The negative values are

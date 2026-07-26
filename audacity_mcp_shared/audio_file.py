@@ -177,19 +177,27 @@ def _riff_chunks(fh):
         pos += 8 + size + (size & 1)  # chunks are word-aligned
 
 
-class FloatWavReader:
-    """A `wave`-shaped reader for IEEE-float WAV, which `wave` refuses.
+class RawWavReader:
+    """A `wave`-shaped reader for the WAV headers `wave` refuses.
 
-    Audacity's internal format is 32-bit float and its exporter is sticky, so a
-    project exported once as float keeps producing float WAVs. `wave` rejects
-    those outright (format tag 3), and a 4-byte width alone cannot tell float
-    from int32 - so this reader exposes `sample_format = "float"` for the decode
-    layer to branch on. Samples are already little-endian, as callers expect.
+    Two shapes reach here. Audacity's internal format is 32-bit float and its
+    exporter is sticky, so a project exported once as float keeps producing
+    float WAVs, which `wave` rejects outright (format tag 3); a 4-byte width
+    alone cannot tell float from int32, so this reader exposes
+    `sample_format` for the decode layer to branch on.
+
+    The second is WAVE_FORMAT_EXTENSIBLE carrying a *PCM* SubFormat GUID.
+    `wave` only learned to read that in Python 3.12, and this project supports
+    3.10, so on those two interpreters an ordinary 24-bit PCM export - the
+    shape libsndfile most often writes as EXTENSIBLE - lands here as well. It
+    is plain PCM once the GUID is unwrapped, so read it rather than rejecting
+    it and telling the user their WAV "is not IEEE float".
+
+    Samples are left little-endian, as callers expect.
     """
 
-    sample_format = "float"
-
     def __init__(self, path: str):
+        self.sample_format = "int"
         self._fh = open(path, "rb")
         try:
             self._parse()
@@ -198,7 +206,7 @@ class FloatWavReader:
             raise
         except Exception as e:
             self._fh.close()
-            raise UnsupportedAudioFile(f"unreadable float WAV: {e}") from e
+            raise UnsupportedAudioFile(f"unreadable WAV: {e}") from e
 
     def _parse(self):
         fmt = None
@@ -223,18 +231,26 @@ class FloatWavReader:
             if len(fmt) < 26:
                 raise UnsupportedAudioFile("EXTENSIBLE WAV fmt chunk is truncated")
             tag = struct.unpack("<H", fmt[24:26])[0]
-        if tag != _WAVE_FORMAT_IEEE_FLOAT:
+        if tag == _WAVE_FORMAT_IEEE_FLOAT:
+            if bits != 32:
+                raise UnsupportedAudioFile(
+                    f"{bits}-bit float WAV is not supported; only 32-bit float is"
+                )
+            self.sample_format = "float"
+        elif tag == _WAVE_FORMAT_PCM:
+            if bits not in (8, 16, 24, 32):
+                raise UnsupportedAudioFile(
+                    f"{bits}-bit PCM WAV is not supported"
+                )
+            self.sample_format = "int"
+        else:
             raise UnsupportedAudioFile(
-                f"WAV format tag {tag} is not IEEE float; only float is parsed here"
-            )
-        if bits != 32:
-            raise UnsupportedAudioFile(
-                f"{bits}-bit float WAV is not supported; only 32-bit float is"
+                f"WAV format tag {tag} is neither PCM nor IEEE float"
             )
 
         self._channels = channels
         self._rate = rate
-        self._sampwidth = 4
+        self._sampwidth = bits // 8
         offset, size = data
         frame_bytes = self._sampwidth * channels
         self._nframes = size // frame_bytes if frame_bytes else 0
@@ -279,14 +295,14 @@ def open_pcm(path: str):
         except (wave.Error, EOFError):
             # wave.Error covers both float cases: a bare IEEE float tag (3) and
             # a WAVE_FORMAT_EXTENSIBLE header whose SubFormat GUID is float,
-            # which it reports as "unknown extended format". An EXTENSIBLE
-            # header carrying a PCM GUID opens normally and never reaches here.
-            # EOFError is the truncated-header case, where nothing has been
-            # established about the format yet, so it is worth the second look
-            # too. Audacity's sticky exporter can leave a project emitting
-            # 32-bit float WAV, so parse that ourselves rather than failing the
-            # measurement.
-            return FloatWavReader(path)
+            # which it reports as "unknown extended format". EXTENSIBLE
+            # carrying a PCM GUID opens normally on Python 3.12 and later, but
+            # wave only learned EXTENSIBLE in 3.12 and this project supports
+            # 3.10, so on 3.10 and 3.11 that lands here too - which is why the
+            # fallback reads PCM as well as float. EOFError is the
+            # truncated-header case, where nothing has been established about
+            # the format yet, so it is worth the second look too.
+            return RawWavReader(path)
     if container == "aiff":
         return AiffReader(path)
     raise UnsupportedAudioFile(
