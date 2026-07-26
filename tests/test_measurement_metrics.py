@@ -1,6 +1,6 @@
 import pytest
 
-from audacity_mcp.measurement.metrics import compute_metrics
+from audacity_mcp.measurement.metrics import _percentile, compute_metrics
 from tests.measurement_signals import (
     constant, db_to_amplitude, silence, sine, write_signal,
 )
@@ -65,6 +65,38 @@ class TestNoiseFloor:
         """Dropping short blocks must not drop the only block there is."""
         p = write_signal(tmp_path / "short.wav", [sine(1000, 0.3, amplitude=1.0)])
         assert compute_metrics(p)["noise_floor_db"] > -20.0
+
+
+class TestPercentile:
+    """The interpolation itself. Every metrics-level assertion below reads a
+    percentile near an end of the distribution, where returning the nearest
+    value and interpolating agree - so collapsing the interpolation entirely
+    (pos = 0, i.e. always the minimum) passed all of them."""
+
+    def test_it_interpolates_between_the_two_neighbours(self):
+        assert _percentile([0.0, 10.0, 20.0, 30.0], 50) == pytest.approx(15.0)
+
+    def test_the_ends_are_the_ends(self):
+        values = [1.0, 2.0, 3.0, 4.0]
+        assert _percentile(values, 0) == pytest.approx(1.0)
+        assert _percentile(values, 100) == pytest.approx(4.0)
+
+    def test_a_single_value_is_every_percentile(self):
+        """There is no special case for this in the code; the interpolation
+        returns it because pos is 0 and both neighbours are index 0."""
+        for pct in (0, 10, 50, 95, 100):
+            assert _percentile([0.42], pct) == pytest.approx(0.42)
+
+
+class TestDynamicRange:
+    def test_a_loud_and_quiet_file_has_the_range_between_them(self, tmp_path):
+        """p95 - p10 over per-block RMS. Nothing asserted a non-zero range
+        before this, so a percentile that always returned the minimum would
+        have reported every file as having no dynamic range at all."""
+        loud = sine(1000, 3.0, amplitude=1.0)
+        quiet = sine(1000, 3.0, amplitude=db_to_amplitude(-60.0))
+        p = write_signal(tmp_path / "range.wav", [loud + quiet])
+        assert compute_metrics(p)["dynamic_range_db"] == pytest.approx(60.0, abs=3.0)
 
 
 class TestDcOffset:

@@ -134,6 +134,43 @@ list, a mutation that is not a real semantic change:
 A third row read ANCHOR-AMBIGUOUS: `self._sampwidth = bits // 8` occurs in both
 readers in that file. Anchoring on the surrounding two lines made it unique.
 
+### Fourth pass: the two minors that shipped
+
+Both were triaged as ship-as-is at merge and looked at afterwards. Both turned
+out to be hiding a live gap rather than being cosmetic.
+
+| Rule | Mutation | Verdict | Test that caught it |
+|------|----------|---------|---------------------|
+| Loudness needs numpy **and** scipy | `and` to `or` in `describe_capability` | guarded (5) | `TestCapabilityProbe::test_loudness_requires_both`, all four combinations |
+| `LOUDNESS_AVAILABLE` needs both | `and` to `or` on the constant | guarded | `::test_the_constant_is_false_when_only_one_half_is_present` |
+| The reason names only what is missing | Always name both | guarded (2) | `::test_the_reason_names_exactly_what_is_missing` |
+| The reason carries the install hint | Drop `_INSTALL_HINT` | guarded (3) | same, all three cases |
+| The available reason is empty | Return a non-empty reason | guarded | `::test_reason_is_empty_when_available` |
+| The percentile interpolates | `pos = 0.0` (always the minimum) | guarded (3) | `TestPercentile::test_it_interpolates_between_the_two_neighbours`, `TestDynamicRange::test_a_loud_and_quiet_file_has_the_range_between_them` |
+| The percentile clamps its upper neighbour | `hi = lo + 1` | guarded (15) | `TestPercentile::test_a_single_value_is_every_percentile` and the metrics suite |
+
+Two rows read UNGUARDED on the first run of this pass, and neither was dead
+code:
+
+- **`LOUDNESS_AVAILABLE = HAVE_NUMPY and HAVE_SCIPY`** is computed once at
+  import, so no monkeypatching re-runs it. With both extras it reads True
+  whether the operator is `and` or `or`; with neither it reads False either
+  way. Those are the only two configurations the gate runs, so the operator
+  was untestable by construction. The new test reloads the module with scipy
+  unimportable, which is the one configuration that tells them apart.
+- **`pos = 0.0`** makes every percentile return the minimum, and the whole
+  metrics suite passed. Every existing assertion read a percentile near an end
+  of the distribution, where interpolating and taking the nearest value agree,
+  and `dynamic_range_db` - a shipped field - had no test asserting a non-zero
+  range at all. A direct percentile test and a loud-plus-quiet range test close
+  it.
+
+The `_percentile` empty-list branch that prompted this pass was indeed dead,
+and so was the single-value branch beside it that nobody had flagged: the
+interpolation already returns the only value at every percentile, because `pos`
+is 0 and both neighbours are index 0. Both are deleted rather than tested, and
+the rule that actually holds is mutated instead.
+
 ### Row 14 is not in this table
 
 Row 14 was to be "the export metadata dialog preference reads `unknown` when
