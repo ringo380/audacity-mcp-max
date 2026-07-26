@@ -440,7 +440,7 @@ Pipeline: DC offset → HPF 100Hz → noise reduction 10dB → compression 3:1 �
 
 ### `auto_cleanup_live`
 
-**One-click live recording cleanup** — aggressive processing for noisy/field recordings.
+**One-click live recording cleanup** - aggressive processing for noisy/field recordings.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -488,12 +488,16 @@ once the job reaches `complete` or `error`:
 
 | Key | Description |
 |-----|-------------|
-| `verified` | Whether this run measured at all (the pipeline's `verify` argument). |
+| `verified` | Whether this run actually measured - `verify` was on **and** both measurements landed. A blocked export leaves this `false`, so it is never a claim the numbers beside it cannot support. |
 | `before` | Full measurement of the audio at pipeline start, or `null` if `verify=False` or the export failed. |
 | `after` | Full measurement of the audio at pipeline end, same rules as `before`. |
 | `delta` | Per-field `{before, after, change}` for whatever both measurements share; a field missing from either side is skipped, not reported as zero change. Includes `_no_measurable_change: true` when every measured field moved less than the noise floor. |
 | `targets` | This pipeline's declared targets (see below), each `met`, `missed`, or `unknown`. Empty for pipelines with no declared target (`auto_cleanup_audio`, `auto_lofi_effect`), and also empty when the exit measurement failed - check `after` and `warnings` before reading `{}` as "nothing to check". |
 | `capability` | What this install can measure - `numpy`, `scipy`, `loudness`, and `reason` if loudness is unavailable. |
+
+A measurement that could not be taken does **not** make `result.success` false.
+The audio was still processed; what failed was checking it. The reason appears
+in `warnings` alongside any genuine step failures, and `verified` is `false`.
 
 Each entry in `targets` (keyed `lufs`, `true_peak`, `rms`, `peak`, or
 `noise_floor`, depending on the pipeline) reports one of three statuses:

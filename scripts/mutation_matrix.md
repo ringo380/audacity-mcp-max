@@ -91,6 +91,49 @@ looked like it covered the rule:
 - The per-channel click test used a fifth of a second of audio, so it never
   reached a second block, and the rule it names only bites at a block boundary.
 
+### Third pass: the second whole-branch review
+
+A second review of the finished branch found ten more defects, one of which
+undid the stereo fix recorded in the pass above: Audacity's `ExportCommand`
+declares `S.Define(mnChannels, wxT("NumChannels"), 1)`, so *omitting* the
+parameter takes the default and exports mono exactly as asking for one did.
+The row above was guarded by a test that asserted the kwarg was absent, which
+is a fact about our code and not about the export - the mutation restored a
+line the code noticed and Audacity did not.
+
+Ten rows, all guarded, against a baseline of 84 passed.
+
+| Rule | Mutation | Verdict | Test that caught it |
+|------|----------|---------|---------------------|
+| The channel count is sent, not omitted | Drop `NumChannels` from the pipeline export | guarded (3) | `TestMeasurementBlock::test_the_measurement_export_keeps_the_project_channels` and the mono/unanswerable cases |
+| The analysis path sends it too | Drop `NumChannels` from the `auto_analyze_audio` export | guarded (2) | `::test_the_analysis_export_keeps_the_project_channels` |
+| An unanswerable track query means stereo | Fall back to 1 | guarded | `::test_an_unanswerable_track_query_exports_stereo` |
+| A stereo track forces two channels | Always return 1 | guarded | `::test_the_measurement_export_keeps_the_project_channels` |
+| Short tails do not count in the percentile | Count every block | guarded | `TestNoiseFloor::test_a_short_tail_does_not_define_the_floor` |
+| The first block sets the nominal length | Reset it on every block | guarded | `::test_a_short_tail_does_not_define_the_floor` |
+| A failed measurement is not a failed pipeline | Fold `measurement_failed` back into `success` | guarded | `TestMeasurementFailureIsHonest::test_a_failed_measurement_does_not_fail_the_pipeline` |
+| A failed measurement still warns | Report only `steps_failed` as warnings | guarded (2) | `::test_a_failed_export_does_not_report_a_clean_measurement` |
+| `verified` reflects what landed | Set it from the request again | guarded | `::test_a_failed_measurement_is_not_reported_as_verified` |
+| Measurement runs off the event loop | Call `measure_file` inline | guarded | `TestMeasurementDoesNotStallTheLoop::test_measurement_runs_off_the_event_loop` |
+| lofi normalises before naming the job | Move `intensity.lower()` below the job name | guarded | `TestTargets::test_a_lofi_intensity_in_the_wrong_case_names_the_job_normally` |
+| The preset is validated before the slot is claimed | Restore create-then-validate | guarded (2) | `TestPresetValidation::test_an_unknown_style_leaves_no_job_behind`, `::test_a_rejected_preset_does_not_block_the_next_pipeline` |
+| EXTENSIBLE PCM is read, not rejected | Disable the PCM branch | guarded (3) | `TestOpenPcm::test_extensible_pcm_reads_where_wave_cannot` and the 16-bit and 24-bit cases |
+| The fallback keeps the real sample width | Hardcode 4 | guarded (2) | `::test_extensible_pcm_reads_where_wave_cannot` |
+
+Two rows first read UNGUARDED and were false zeros - the fourth cause on the
+list, a mutation that is not a real semantic change:
+
+- `st.block_frames = max(st.block_frames, n)` equals the first block's length
+  on any file whose blocks are equal except a short tail, so the mutation
+  changed nothing. `st.block_frames = n` is the real inversion, and it fails
+  the test.
+- `presets.get(style)` left the validation exactly where it was. The rule is an
+  *ordering*, so the only faithful mutation is to restore the whole
+  create-then-validate arrangement, which fails two tests.
+
+A third row read ANCHOR-AMBIGUOUS: `self._sampwidth = bits // 8` occurs in both
+readers in that file. Anchoring on the surrounding two lines made it unique.
+
 ### Row 14 is not in this table
 
 Row 14 was to be "the export metadata dialog preference reads `unknown` when
