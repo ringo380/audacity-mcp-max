@@ -1,13 +1,18 @@
 import asyncio
-import math
 import os
-import struct
 import tempfile
 import time
 import uuid
 
 from mcp.server.fastmcp import FastMCP
-from audacity_mcp_shared.audio_file import UnsupportedAudioFile, open_pcm
+from audacity_mcp.measurement import (
+    check_targets as _check_targets,
+    delta as _delta,
+    describe_capability,
+    for_pipeline as _target_for,
+    measure_file,
+)
+from audacity_mcp.measurement.reader import UnreadableAudio
 from audacity_mcp_shared.error_codes import AudacityMCPError, ErrorCode
 
 # Delay between pipeline steps to let Audacity fully process each effect
@@ -46,172 +51,6 @@ def _temp_wav_path() -> str:
     return os.path.join(tempfile.gettempdir(), f"audacity_mcp_analyze_{uuid.uuid4().hex[:8]}.wav")
 
 
-def _measure_wav(wav_path: str) -> dict | None:
-    """Read an exported file and compute comprehensive audio diagnostics.
-
-    Returns a dict with all measurements, or None if there are no frames or
-    the sample width is one this cannot unpack. Raises UnsupportedAudioFile
-    when the export is not readable PCM at all — Audacity writes AIFF into a
-    .wav path often enough that "could not parse audio data" is the wrong
-    thing to tell a caller.
-    """
-    try:
-        with open_pcm(wav_path) as wf:
-            rate = wf.getframerate()
-            n_frames = wf.getnframes()
-            sw = wf.getsampwidth()
-            if n_frames == 0:
-                return None
-
-            if sw == 2:
-                fmt_char = "h"
-                max_val = 32768.0
-            elif sw == 4:
-                fmt_char = "f"
-                max_val = 1.0
-            else:
-                return None
-
-            duration = round(n_frames / rate, 2)
-            chunk_size = rate  # 1-second chunks
-
-            # Accumulators
-            peak_abs = 0.0
-            noise_sum_sq = 0.0
-            noise_count = 0
-            noise_target = min(int(rate * 0.5), n_frames)
-            total_sum = 0.0  # For DC offset
-            total_sum_sq = 0.0  # For overall RMS
-            total_count = 0
-            clipped_samples = 0
-            clip_threshold = max_val * 0.999
-
-            # Click/pop detection — count sudden large jumps between samples
-            click_count = 0
-            click_threshold = max_val * 0.3  # Jump > 30% of full scale = click
-            prev_sample = 0.0
-
-            # Silence gap detection — track runs of very quiet audio
-            silence_threshold = max_val * 0.001  # -60 dB
-            min_gap_samples = int(rate * 0.5)  # Gaps > 0.5s count
-            current_silence_run = 0
-            silence_gaps = []  # List of (start_seconds, duration_seconds)
-
-            # Per-second RMS for dynamic range
-            second_rms_values = []
-            second_sum_sq = 0.0
-            second_count = 0
-
-            frames_read = 0
-            while frames_read < n_frames:
-                n = min(chunk_size, n_frames - frames_read)
-                raw = wf.readframes(n)
-                if len(raw) < n * sw:
-                    break
-                samples = struct.unpack(f"<{n}{fmt_char}", raw)
-
-                for s in samples:
-                    a = abs(s)
-
-                    # Peak
-                    if a > peak_abs:
-                        peak_abs = a
-
-                    # Clipping (consecutive maxed-out samples)
-                    if a >= clip_threshold:
-                        clipped_samples += 1
-
-                    # DC offset + RMS
-                    total_sum += s
-                    total_sum_sq += s * s
-                    total_count += 1
-
-                    # Click detection
-                    delta = abs(s - prev_sample)
-                    if delta > click_threshold and total_count > 1:
-                        click_count += 1
-                    prev_sample = s
-
-                    # Silence gap tracking
-                    if a < silence_threshold:
-                        current_silence_run += 1
-                    else:
-                        if current_silence_run >= min_gap_samples:
-                            gap_start = (frames_read + total_count - current_silence_run) / rate
-                            gap_dur = current_silence_run / rate
-                            silence_gaps.append((round(max(gap_start, 0), 2), round(gap_dur, 2)))
-                        current_silence_run = 0
-
-                    # Per-second RMS
-                    second_sum_sq += s * s
-                    second_count += 1
-                    if second_count >= rate:
-                        rms = math.sqrt(second_sum_sq / second_count) / max_val
-                        if rms > 1e-10:
-                            second_rms_values.append(20 * math.log10(rms))
-                        second_sum_sq = 0.0
-                        second_count = 0
-
-                # Noise floor (first 0.5s)
-                if noise_count < noise_target:
-                    take = min(n, noise_target - noise_count)
-                    for s in samples[:take]:
-                        noise_sum_sq += s * s
-                    noise_count += take
-
-                frames_read += n
-
-            # Final silence gap at end of file
-            if current_silence_run >= min_gap_samples:
-                gap_start = (n_frames - current_silence_run) / rate
-                silence_gaps.append((round(max(gap_start, 0), 2), round(current_silence_run / rate, 2)))
-
-            # Last partial second
-            if second_count > rate * 0.1:
-                rms = math.sqrt(second_sum_sq / second_count) / max_val
-                if rms > 1e-10:
-                    second_rms_values.append(20 * math.log10(rms))
-
-            # Compute results
-            peak_linear = peak_abs / max_val
-            peak_db = round(20 * math.log10(max(peak_linear, 1e-10)), 1)
-
-            noise_db = None
-            if noise_count > 0:
-                rms_linear = math.sqrt(noise_sum_sq / noise_count) / max_val
-                noise_db = round(20 * math.log10(max(rms_linear, 1e-10)), 1)
-
-            overall_rms_db = None
-            if total_count > 0:
-                overall_rms = math.sqrt(total_sum_sq / total_count) / max_val
-                overall_rms_db = round(20 * math.log10(max(overall_rms, 1e-10)), 1)
-
-            dc_offset = round((total_sum / total_count) / max_val, 6) if total_count > 0 else 0.0
-
-            # Dynamic range from per-second RMS values
-            dynamic_range_db = None
-            if len(second_rms_values) >= 2:
-                dynamic_range_db = round(max(second_rms_values) - min(second_rms_values), 1)
-
-            return {
-                "peak_db": peak_db,
-                "noise_floor_db": noise_db,
-                "overall_rms_db": overall_rms_db,
-                "dc_offset": dc_offset,
-                "duration": duration,
-                "sample_rate": rate,
-                "clipped_samples": clipped_samples,
-                "click_count": click_count,
-                "silence_gaps": silence_gaps[:10],  # Cap at 10 to avoid huge output
-                "silence_gap_count": len(silence_gaps),
-                "dynamic_range_db": dynamic_range_db,
-            }
-    except UnsupportedAudioFile:
-        raise
-    except Exception:
-        return None
-
-
 def register(mcp: FastMCP):
     from audacity_mcp.main import client
 
@@ -221,12 +60,6 @@ def register(mcp: FastMCP):
         """Select all tracks AND all time — both are needed for effects to work."""
         await client.execute("SelAllTracks")
         await client.execute("SelectAll")
-
-    async def _show_completion_popup(title: str, details: str):
-        """No-op — popups removed because NyquistPrompt shows blocking dialogs
-        that require the user to click OK (sometimes twice). The AI already
-        reports results through the MCP response."""
-        pass
 
     def _find_running_job() -> tuple[str | None, dict | None, str]:
         """Return (job_id, job, kind) for whatever is running, or (None, None, "")."""
@@ -258,7 +91,9 @@ def register(mcp: FastMCP):
             "message": "Use check_pipeline_status to monitor the existing pipeline.",
         }
 
-    async def _create_job(pipeline_name: str) -> tuple[str | None, dict | None, dict | None]:
+    async def _create_job(
+        pipeline_name: str, verify: bool = True
+    ) -> tuple[str | None, dict | None, dict | None]:
         """Create a job dict and return (job_id, job, None).
 
         On a conflict returns (None, None, error_dict). The conflicting job is
@@ -277,15 +112,64 @@ def register(mcp: FastMCP):
                 "current_step": "starting",
                 "steps_applied": [],
                 "steps_failed": [],
+                # Kept apart from steps_failed: a measurement that could not be
+                # taken is not a processing step that failed, and result.success
+                # is computed from steps_failed alone.
+                "measurement_failed": [],
+                "steps": [],
                 "started_at": time.time(),
                 "result": None,
                 "error": None,
+                "verify": verify,
+                "measurement": {
+                    "verified": verify,
+                    "before": None,
+                    "after": None,
+                    "delta": {},
+                    "targets": {},
+                },
             }
             _jobs[job_id] = job
             return job_id, job, None
 
+    async def _begin_pipeline(job: dict):
+        """Transport precondition and entry measurement.
+
+        Stop first: Audacity refuses scripted commands while transport is
+        playing or paused, and every one of those refusals looks exactly like a
+        dead pipe. Stop is idempotent, so this costs nothing when it was already
+        stopped and removes the whole failure class when it was not.
+        """
+        try:
+            await client.execute("Stop")
+        except Exception as e:
+            job["steps_failed"].append(f"stop transport: {e}")
+        if job.get("verify"):
+            job["current_step"] = "measuring before"
+            job["measurement"]["before"] = await _measure_current_audio(job)
+
     async def _complete_job(job: dict, label: str, targets: dict):
-        """Mark job complete, build result, show popup."""
+        """Mark job complete, measure the result, build the report."""
+        if job.get("verify"):
+            job["current_step"] = "measuring after"
+            job["measurement"]["after"] = await _measure_current_audio(job)
+
+        before = job["measurement"]["before"]
+        after = job["measurement"]["after"]
+        # Set from what actually landed, not from the request. This package
+        # exists to stop unverifiable claims, so a report carrying
+        # verified: true beside before: null, after: null would be the same
+        # defect it was written to remove.
+        job["measurement"]["verified"] = bool(
+            job.get("verify") and before is not None and after is not None
+        )
+        if before and after:
+            job["measurement"]["delta"] = _delta(before, after)
+        if after:
+            job["measurement"]["targets"] = _check_targets(
+                after, _target_for(job["pipeline"])
+            )
+
         elapsed = round(time.time() - job["started_at"], 1)
         job["status"] = "complete"
         job["current_step"] = "done"
@@ -295,25 +179,34 @@ def register(mcp: FastMCP):
             "targets": targets,
             "elapsed_seconds": elapsed,
         }
-        if job["steps_failed"]:
-            job["result"]["warnings"] = job["steps_failed"].copy()
+        if job["steps_failed"] or job["measurement_failed"]:
+            job["result"]["warnings"] = (
+                job["steps_failed"] + job["measurement_failed"]
+            )
 
-        target_str = ", ".join(f"{k}: {v}" for k, v in targets.items())
-        await _show_completion_popup(
-            label,
-            f"Steps: {' > '.join(job['steps_applied'])}\\n"
-            f"Target: {target_str}\\n"
-            f"Time: {elapsed}s",
-        )
+    def _record_step(job: dict, name: str, ok: bool, noop_reason: str | None = None):
+        job["steps"].append({"name": name, "ok": ok, "noop_reason": noop_reason})
 
     async def _run_pipeline_step(job: dict, name: str, coro):
         """Run a single pipeline step with error handling and job tracking."""
         job["current_step"] = name
         try:
-            await coro
-            job["steps_applied"].append(name)
+            reply = await coro
+            noop = None
+            if isinstance(reply, dict) and reply.get("success") is False:
+                # Not appended to steps_applied: a step Audacity refused did not
+                # happen, and steps_applied is what steps_completed and the
+                # result message are built from. Naming it there is the same
+                # lie as reporting a measurement that failed as a clean one.
+                noop = f"Audacity reported failure: {reply.get('message', '')}"
+                job["steps_failed"].append(f"{name}: {noop}")
+                _record_step(job, name, False, noop)
+            else:
+                job["steps_applied"].append(name)
+                _record_step(job, name, True, None)
         except Exception as e:
             job["steps_failed"].append(f"{name}: {e}")
+            _record_step(job, name, False, str(e))
         await asyncio.sleep(_STEP_DELAY)
 
     async def _noise_reduction_step(job: dict, reduction_db: float = 12, sensitivity: float = 6, smoothing: int = 3):
@@ -351,28 +244,88 @@ def register(mcp: FastMCP):
         await _run_pipeline_step(job, f"HPF {freq}Hz",
             client.execute_long("High-passFilter", frequency=freq, rolloff="dB12"))
 
-    async def _measure_current_audio(job: dict) -> tuple[float | None, float | None]:
-        """Export current audio to temp WAV and measure peak + noise floor.
-        Returns (peak_db, noise_floor_db). Non-destructive — doesn't modify audio."""
+    async def _project_channels() -> int:
+        """How many channels a measurement export has to carry.
+
+        This has to be sent explicitly. Audacity's ExportCommand declares
+        `S.Define(mnChannels, wxT("NumChannels"), 1)`, so an Export2 that omits
+        the parameter takes the default and writes mono - leaving it out does
+        not mean "keep what the project has", it means the same downmix as
+        asking for it. Measuring that downmix reads about 3 dB off the truth on
+        uncorrelated stereo, which is the exact error the dual-mono convention
+        exists to avoid, reintroduced one layer above the meter. True peak is
+        worse: L at +0.99 against R at -0.99 sums to about zero, so a ceiling
+        check passes on a file that clips.
+
+        Two is the answer whenever the project has any stereo track, and also
+        whenever the question cannot be answered. Guessing mono would silently
+        downmix; guessing stereo cannot lose anything, because a mono project
+        exported as two channels measures identically to the dual-mono
+        convention applied to one.
+        """
+        import json as _json
+
+        try:
+            info = await client.execute("GetInfo", Type="Tracks")
+            tracks = _json.loads(info.get("message", "") or "[]")
+        except Exception:
+            return 2
+        if not isinstance(tracks, list) or not tracks:
+            return 2
+        counts = [
+            t.get("channels", 0) for t in tracks if isinstance(t, dict)
+        ]
+        if not counts:
+            return 2
+        return 2 if max(counts) >= 2 else 1
+
+    async def _measure_current_audio(job: dict) -> dict | None:
+        """Export the current audio to a temp WAV and measure it.
+
+        Non-destructive: it exports a copy and reads that back. Returns the full
+        measurement dict, or None with the reason recorded in
+        measurement_failed - a measurement that failed must never look like one
+        that came back clean.
+
+        The reasons go in their own list, not steps_failed. A verified run
+        measures three times, and result.success is computed from steps_failed,
+        so a project whose export is blocked by a modal dialog used to report
+        success: False for a pipeline whose every processing step applied. The
+        audio was still processed; what failed was checking it. Both still
+        surface as warnings, so nothing is hidden - they are just no longer the
+        same claim.
+        """
         tmp_wav = _temp_wav_path()
         try:
             await _select_all()
-            await client.execute_long("Export2", Filename=tmp_wav, NumChannels=1)
-            if not os.path.exists(tmp_wav) or os.path.getsize(tmp_wav) < 100:
-                job["steps_failed"].append(f"measurement: WAV export failed (file missing or empty at {tmp_wav})")
-                return None, None
-            try:
-                measurements = _measure_wav(tmp_wav)
-            except UnsupportedAudioFile as e:
-                job["steps_failed"].append(f"measurement: {e}")
-                return None, None
-            if measurements is None:
-                job["steps_failed"].append("measurement: file exists but holds no readable frames")
-                return None, None
-            return measurements["peak_db"], measurements["noise_floor_db"]
+            await client.execute_long(
+                "Export2", Filename=tmp_wav, NumChannels=await _project_channels()
+            )
+            if not os.path.exists(tmp_wav):
+                job["measurement_failed"].append(
+                    f"measurement: no file at {tmp_wav}. If Audacity is showing a "
+                    "dialog (the export metadata editor is the usual one), the "
+                    "export is blocked waiting on it - check its window."
+                )
+                return None
+            if os.path.getsize(tmp_wav) < 100:
+                job["measurement_failed"].append(
+                    "measurement: export produced an empty file"
+                )
+                return None
+            # In a thread: measure_file is CPU-bound - a K-weighting pass and a
+            # 4x-oversampled resample over the whole export - and a verified run
+            # makes three of these calls. Run inline it blocks the event loop
+            # for their duration, so check_pipeline_status, the documented way
+            # to watch a background job, cannot answer while a long project is
+            # being measured and current_step sits frozen at "measuring before".
+            return await asyncio.to_thread(measure_file, tmp_wav)
+        except UnreadableAudio as e:
+            job["measurement_failed"].append(f"measurement: {e}")
+            return None
         except Exception as e:
-            job["steps_failed"].append(f"measurement: {type(e).__name__}: {e}")
-            return None, None
+            job["measurement_failed"].append(f"measurement: {type(e).__name__}: {e}")
+            return None
         finally:
             try:
                 os.remove(tmp_wav)
@@ -393,17 +346,23 @@ def register(mcp: FastMCP):
         """
         await asyncio.sleep(1.0)  # Extra delay to let prior effects settle
 
-        peak_db, noise_db = await _measure_current_audio(job)
+        measured = await _measure_current_audio(job)
 
-        if peak_db is None:
+        if measured is None or measured.get("peak_db") is None:
             # Not an applied step: the pipeline is finishing without having done
             # anything about loudness, and the caller cannot tell that apart from
-            # "peaks were already fine" unless it lands in steps_failed, which
-            # surfaces as a warning on the job result.
+            # "peaks were already fine" unless it lands in steps_failed.
             job["steps_failed"].append("loudness skipped: could not measure the audio")
             return
 
-        job["steps_applied"].append(f"measured: peak={peak_db}dB noise={noise_db}dB")
+        peak_db = measured["peak_db"]
+        noise_db = measured["noise_floor_db"]
+        # Named as the check it is. steps_applied feeds steps_completed and the
+        # result message, so a bare "measured: ..." reads there as a processing
+        # step the pipeline applied to the audio, which it is not.
+        job["steps_applied"].append(
+            f"loudness check: peak={peak_db}dB noise={noise_db}dB"
+        )
 
         if peak_db > peak_target:
             # Peaks are too hot — bring them DOWN to target (reduce only, never boost)
@@ -720,8 +679,21 @@ def register(mcp: FastMCP):
             result["result"] = job["result"]
         elif job["status"] == "error":
             result["error"] = job["error"]
-        if job["steps_failed"]:
-            result["warnings"] = job["steps_failed"].copy()
+        if job["steps_failed"] or job.get("measurement_failed"):
+            result["warnings"] = (
+                job["steps_failed"] + job.get("measurement_failed", [])
+            )
+        if job.get("steps"):
+            result["steps"] = [s.copy() for s in job["steps"]]
+        if job["status"] in ("complete", "error") and job.get("measurement"):
+            result["measurement"] = {
+                "verified": job["measurement"]["verified"],
+                "before": job["measurement"]["before"],
+                "after": job["measurement"]["after"],
+                "delta": job["measurement"]["delta"],
+                "targets": job["measurement"]["targets"],
+                "capability": describe_capability(),
+            }
         return result
 
     # ── auto_analyze_audio (synchronous) ──────────────────────────────
@@ -772,28 +744,38 @@ def register(mcp: FastMCP):
         measurement_error = None
 
         try:
+            await client.execute("Stop")
             await _select_all()
-            export_result = await client.execute_long("Export2", Filename=tmp_wav, NumChannels=1)
+            # Sent explicitly, for the reason spelled out in _project_channels:
+            # an omitted NumChannels defaults to 1, so leaving it out exports
+            # the same mono downmix as asking for one, and the reported LUFS
+            # and true peak would be around 3 dB from what the project is.
+            # The track query above already answered this, so reuse it.
+            # default=2 when the query told us nothing, for the same reason
+            # _project_channels falls back to 2: a wrong guess of mono loses a
+            # channel, a wrong guess of stereo loses nothing.
+            channels = max((t["channels"] for t in track_info), default=2)
+            export_result = await client.execute_long(
+                "Export2", Filename=tmp_wav, NumChannels=2 if channels >= 2 else 1
+            )
 
             if not os.path.exists(tmp_wav):
-                measurement_error = f"Export2 returned {export_result} but WAV file was not created at {tmp_wav}"
+                measurement_error = (
+                    f"Export2 returned {export_result} but no file appeared at {tmp_wav}. "
+                    "If Audacity is showing a dialog - the export metadata editor is "
+                    "the usual one - the export is blocked waiting on it."
+                )
             else:
                 file_size = os.path.getsize(tmp_wav)
                 if file_size < 100:
-                    measurement_error = f"Export2 created a tiny file ({file_size} bytes) — export may have failed"
+                    measurement_error = f"Export2 created a tiny file ({file_size} bytes)"
                 else:
-                    try:
-                        measurements = _measure_wav(tmp_wav)
-                    except UnsupportedAudioFile as e:
-                        measurements = None
-                        measurement_error = f"export of {file_size} bytes is not readable audio: {e}"
-                    if measurements is None:
-                        if measurement_error is None:
-                            measurement_error = (
-                                f"file exists ({file_size} bytes) but holds no readable frames"
-                            )
-                    elif measurements["duration"] and measurements["duration"] > 0:
-                        total_duration = measurements["duration"]
+                    # In a thread, for the reason given in
+                    # _measure_current_audio: this is a CPU-bound pass over the
+                    # whole export and it must not stall the event loop.
+                    measurements = await asyncio.to_thread(measure_file, tmp_wav)
+        except UnreadableAudio as e:
+            measurement_error = f"export is not readable audio: {e}"
         except Exception as e:
             measurement_error = f"Export/analysis failed: {type(e).__name__}: {e}"
         finally:
@@ -802,16 +784,19 @@ def register(mcp: FastMCP):
             except OSError:
                 pass
 
-        # Extract values from measurements
         peak_db = measurements["peak_db"] if measurements else None
         noise_floor_db = measurements["noise_floor_db"] if measurements else None
-        overall_rms_db = measurements["overall_rms_db"] if measurements else None
+        overall_rms_db = measurements["rms_db"] if measurements else None
         dc_offset = measurements["dc_offset"] if measurements else None
         clipped_samples = measurements["clipped_samples"] if measurements else 0
         click_count = measurements["click_count"] if measurements else 0
         silence_gaps = measurements["silence_gaps"] if measurements else []
         silence_gap_count = measurements["silence_gap_count"] if measurements else 0
         dynamic_range_db = measurements["dynamic_range_db"] if measurements else None
+        lufs = measurements["lufs"] if measurements else None
+        true_peak_dbtp = measurements["true_peak_dbtp"] if measurements else None
+        if measurements and measurements["duration"]:
+            total_duration = measurements["duration"]
 
         is_clipping = peak_db is not None and peak_db >= -0.1
 
@@ -940,6 +925,9 @@ def register(mcp: FastMCP):
             "click_pop_count": click_count,
             "silence_gaps": silence_gap_count,
             "dynamic_range_db": dynamic_range_db,
+            "lufs": lufs,
+            "true_peak_dbtp": true_peak_dbtp,
+            "loudness_measurement": describe_capability(),
             "duration_seconds": total_duration,
             "track_count": len(track_info),
             "tracks": track_info,
@@ -958,6 +946,7 @@ def register(mcp: FastMCP):
 
     async def _cleanup_audio_pipeline(job: dict, remove_noise: bool, remove_clicks: bool):
         try:
+            await _begin_pipeline(job)
             await _dc_offset_step(job)
             await _hpf_step(job, 80.0)
 
@@ -978,6 +967,7 @@ def register(mcp: FastMCP):
     async def auto_cleanup_audio(
         remove_noise: bool = True,
         remove_clicks: bool = False,
+        verify: bool = True,
     ) -> dict:
         """SAFE CLEANUP: Remove noise and artifacts WITHOUT changing loudness or dynamics.
         Use this when audio levels are already good and you just want to clean it up.
@@ -989,11 +979,13 @@ def register(mcp: FastMCP):
         Args:
             remove_noise: Apply noise reduction using first 0.5s as noise profile. Default: True
             remove_clicks: Remove clicks/pops (useful for vinyl/old recordings). Default: False
+            verify: Measure the audio before and after and report what changed.
+                Costs two extra exports. Set False on very long projects.
 
         IMPORTANT: If remove_noise is True, the first 0.5 seconds should be room tone / silence.
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job, conflict = await _create_job("cleanup_audio")
+        job_id, job, conflict = await _create_job("cleanup_audio", verify=verify)
         if job is None:
             return conflict
         coro = _cleanup_audio_pipeline(job, remove_noise, remove_clicks)
@@ -1004,6 +996,7 @@ def register(mcp: FastMCP):
 
     async def _podcast_pipeline(job: dict, remove_noise: bool, remove_silence: bool):
         try:
+            await _begin_pipeline(job)
             await _dc_offset_step(job)
             await _hpf_step(job, 80.0)
 
@@ -1033,6 +1026,7 @@ def register(mcp: FastMCP):
     async def auto_cleanup_podcast(
         remove_noise: bool = True,
         remove_silence: bool = False,
+        verify: bool = True,
     ) -> dict:
         """ONE-CLICK PODCAST CLEANUP: Professional broadcast-quality processing.
         Runs in background — returns a job_id immediately. Use check_pipeline_status to monitor.
@@ -1047,11 +1041,13 @@ def register(mcp: FastMCP):
         Args:
             remove_noise: Apply noise reduction using first 0.5s as noise profile. Default: True
             remove_silence: Truncate long silences/dead air. Default: False
+            verify: Measure the audio before and after and report what changed.
+                Costs two extra exports. Set False on very long projects.
 
         IMPORTANT: If remove_noise is True, the first 0.5 seconds should be room tone / silence.
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job, conflict = await _create_job("podcast_cleanup")
+        job_id, job, conflict = await _create_job("podcast_cleanup", verify=verify)
         if job is None:
             return conflict
         coro = _podcast_pipeline(job, remove_noise, remove_silence)
@@ -1062,6 +1058,7 @@ def register(mcp: FastMCP):
 
     async def _audiobook_pipeline(job: dict, remove_noise: bool):
         try:
+            await _begin_pipeline(job)
             await _dc_offset_step(job)
             await _hpf_step(job, 80.0)
 
@@ -1090,10 +1087,15 @@ def register(mcp: FastMCP):
                     },
                 ))
 
+            # These are what the pipeline aimed at, not what it achieved. The
+            # old wording claimed "ACX/Audible compliant" unconditionally, in
+            # the same reply that could carry a measured rms of "missed" - and
+            # nothing in this pipeline normalises RMS to -20 dB, it compresses,
+            # reduces peaks and limits. measurement.targets is the verdict.
             await _complete_job(job, "Audiobook Mastering Complete (ACX)", {
-                "rms": "-20 dB RMS",
+                "rms": "aimed at -20 dB RMS",
                 "peak_cap": "-3.5 dB",
-                "standard": "ACX/Audible compliant",
+                "standard": "ACX targets applied; see measurement.targets for the verdict",
             })
         except Exception as e:
             job["status"] = "error"
@@ -1102,6 +1104,7 @@ def register(mcp: FastMCP):
     @mcp.tool()
     async def auto_audiobook_mastering(
         remove_noise: bool = True,
+        verify: bool = True,
     ) -> dict:
         """ONE-CLICK AUDIOBOOK MASTERING: ACX/Audible compliant processing.
         Runs in background — returns a job_id immediately. Use check_pipeline_status to monitor.
@@ -1111,11 +1114,13 @@ def register(mcp: FastMCP):
 
         Args:
             remove_noise: Apply noise reduction using first 0.5s as noise profile. Default: True
+            verify: Measure the audio before and after and report what changed.
+                Costs two extra exports. Set False on very long projects.
 
         IMPORTANT: If remove_noise is True, the first 0.5 seconds should be room tone / silence.
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job, conflict = await _create_job("audiobook_mastering")
+        job_id, job, conflict = await _create_job("audiobook_mastering", verify=verify)
         if job is None:
             return conflict
         coro = _audiobook_pipeline(job, remove_noise)
@@ -1126,6 +1131,7 @@ def register(mcp: FastMCP):
 
     async def _interview_pipeline(job: dict, remove_noise: bool, remove_silence: bool):
         try:
+            await _begin_pipeline(job)
             await _dc_offset_step(job)
             await _hpf_step(job, 80.0)
 
@@ -1155,6 +1161,7 @@ def register(mcp: FastMCP):
     async def auto_cleanup_interview(
         remove_noise: bool = True,
         remove_silence: bool = False,
+        verify: bool = True,
     ) -> dict:
         """ONE-CLICK INTERVIEW CLEANUP: Light-touch processing for dialogue and multiple speakers.
         Runs in background — returns a job_id immediately. Use check_pipeline_status to monitor.
@@ -1165,11 +1172,13 @@ def register(mcp: FastMCP):
         Args:
             remove_noise: Apply noise reduction using first 0.5s as noise profile. Default: True
             remove_silence: Truncate long silences. Default: False
+            verify: Measure the audio before and after and report what changed.
+                Costs two extra exports. Set False on very long projects.
 
         IMPORTANT: If remove_noise is True, the first 0.5 seconds should be room tone / silence.
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job, conflict = await _create_job("interview_cleanup")
+        job_id, job, conflict = await _create_job("interview_cleanup", verify=verify)
         if job is None:
             return conflict
         coro = _interview_pipeline(job, remove_noise, remove_silence)
@@ -1180,6 +1189,7 @@ def register(mcp: FastMCP):
 
     async def _vocal_pipeline(job: dict, remove_noise: bool):
         try:
+            await _begin_pipeline(job)
             await _dc_offset_step(job)
             await _hpf_step(job, 100.0)
 
@@ -1204,6 +1214,7 @@ def register(mcp: FastMCP):
     @mcp.tool()
     async def auto_cleanup_vocal(
         remove_noise: bool = True,
+        verify: bool = True,
     ) -> dict:
         """ONE-CLICK VOCAL CLEANUP: Professional processing for singing and studio vocals.
         Runs in background — returns a job_id immediately. Use check_pipeline_status to monitor.
@@ -1213,11 +1224,13 @@ def register(mcp: FastMCP):
 
         Args:
             remove_noise: Apply noise reduction using first 0.5s as noise profile. Default: True
+            verify: Measure the audio before and after and report what changed.
+                Costs two extra exports. Set False on very long projects.
 
         IMPORTANT: If remove_noise is True, the first 0.5 seconds should be room tone / silence.
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job, conflict = await _create_job("vocal_cleanup")
+        job_id, job, conflict = await _create_job("vocal_cleanup", verify=verify)
         if job is None:
             return conflict
         coro = _vocal_pipeline(job, remove_noise)
@@ -1228,6 +1241,7 @@ def register(mcp: FastMCP):
 
     async def _live_pipeline(job: dict):
         try:
+            await _begin_pipeline(job)
             await _dc_offset_step(job)
             await _hpf_step(job, 100.0)
 
@@ -1250,7 +1264,7 @@ def register(mcp: FastMCP):
             job["error"] = str(e)
 
     @mcp.tool()
-    async def auto_cleanup_live() -> dict:
+    async def auto_cleanup_live(verify: bool = True) -> dict:
         """ONE-CLICK LIVE RECORDING CLEANUP: Aggressive processing for noisy/field recordings.
         Runs in background — returns a job_id immediately. Use check_pipeline_status to monitor.
 
@@ -1258,10 +1272,14 @@ def register(mcp: FastMCP):
         Designed for live performances, field recordings, and noisy environments.
         Noise reduction is always on at 12dB — max safe level before artifacts appear.
 
+        Args:
+            verify: Measure the audio before and after and report what changed.
+                Costs two extra exports. Set False on very long projects.
+
         IMPORTANT: The first 0.5 seconds MUST be room tone / ambient noise for noise profiling.
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job, conflict = await _create_job("live_cleanup")
+        job_id, job, conflict = await _create_job("live_cleanup", verify=verify)
         if job is None:
             return conflict
         coro = _live_pipeline(job)
@@ -1272,6 +1290,7 @@ def register(mcp: FastMCP):
 
     async def _mastering_pipeline(job: dict, p: dict, noise_reduce: bool):
         try:
+            await _begin_pipeline(job)
             await _hpf_step(job, p["hpf_freq"])
 
             # Click removal
@@ -1306,6 +1325,7 @@ def register(mcp: FastMCP):
     async def auto_master_music(
         style: str = "edm",
         noise_reduce: bool = False,
+        verify: bool = True,
     ) -> dict:
         """ONE-CLICK MUSIC MASTERING: Professionally master your music track with genre-tuned settings.
         Runs in background — returns a job_id immediately. Use check_pipeline_status to monitor.
@@ -1321,12 +1341,15 @@ def register(mcp: FastMCP):
         Args:
             style: Genre preset - "edm", "hiphop", "rock", "acoustic", "pop", "classical". Default: "edm"
             noise_reduce: Apply gentle noise reduction. Default: False
+            verify: Measure the audio before and after and report what changed.
+                Costs two extra exports. Set False on very long projects.
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job, conflict = await _create_job(f"mastering_{style}")
-        if job is None:
-            return conflict
-
+        # Normalised before the job name is built, not after: the name is what
+        # for_pipeline looks up, so style="EDM" used to produce "mastering_EDM",
+        # match no target spec, and return an empty targets block - identical to
+        # a pipeline that declares no target, so the caller could not tell a
+        # silently dropped check from one that was never declared.
         style = style.lower().strip()
 
         presets = {
@@ -1399,6 +1422,17 @@ def register(mcp: FastMCP):
             )
 
         p = presets[style]
+
+        # The job slot is claimed only once the preset is known good. Validating
+        # after _create_job left the store holding a job marked "running" that
+        # nothing would ever finish, so _find_running_job refused every
+        # subsequent pipeline with "a pipeline is already running" until the
+        # ten-minute stale timeout expired - a typo in style costing ten
+        # minutes of the tool being unusable.
+        job_id, job, conflict = await _create_job(f"mastering_{style}", verify=verify)
+        if job is None:
+            return conflict
+
         coro = _mastering_pipeline(job, p, noise_reduce)
         await asyncio.sleep(0)
         return _start_background(job_id, job, coro, f"Mastering ({p['label']})")
@@ -1407,6 +1441,7 @@ def register(mcp: FastMCP):
 
     async def _lofi_pipeline(job: dict, p: dict):
         try:
+            await _begin_pipeline(job)
             # HPF — cut low end
             await _hpf_step(job, p["hpf_freq"])
 
@@ -1436,6 +1471,7 @@ def register(mcp: FastMCP):
     @mcp.tool()
     async def auto_lofi_effect(
         intensity: str = "medium",
+        verify: bool = True,
     ) -> dict:
         """CREATIVE LO-FI EFFECT: Apply a vintage/lo-fi sound to your audio.
         Runs in background — returns a job_id immediately. Use check_pipeline_status to monitor.
@@ -1445,13 +1481,17 @@ def register(mcp: FastMCP):
 
         Args:
             intensity: "light" (subtle warmth), "medium" (classic lo-fi), "heavy" (extreme tape sound). Default: "medium"
+            verify: Measure the audio before and after and report what changed.
+                Costs two extra exports. Set False on very long projects.
 
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job, conflict = await _create_job(f"lofi_{intensity}")
-        if job is None:
-            return conflict
-
+        # Normalised before the job name is built, for the reason spelled out
+        # in auto_master_music: the name is what for_pipeline looks up, so
+        # intensity="Medium" produced "lofi_Medium", matched no spec, and
+        # returned an empty targets block indistinguishable from a pipeline
+        # that declares no target. Harmless only while all three lofi specs are
+        # None; it stops being harmless the day one is declared.
         intensity = intensity.lower().strip()
 
         presets = {
@@ -1485,6 +1525,14 @@ def register(mcp: FastMCP):
             )
 
         p = presets[intensity]
+
+        # After validation, for the reason given in auto_master_music: a job
+        # created first and rejected second stays "running" forever and blocks
+        # every later pipeline until the stale timeout.
+        job_id, job, conflict = await _create_job(f"lofi_{intensity}", verify=verify)
+        if job is None:
+            return conflict
+
         coro = _lofi_pipeline(job, p)
         await asyncio.sleep(0)
         return _start_background(job_id, job, coro, f"Lo-Fi Effect ({p['label']})")

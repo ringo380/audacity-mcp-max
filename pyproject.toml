@@ -37,6 +37,14 @@ dependencies = [
 transcription = [
     "faster-whisper>=1.0.0",
 ]
+# LUFS and true peak need real signal processing: K-weighting is an IIR filter,
+# so scipy.signal.sosfilt is what makes it viable on an hour of audio. Someone
+# who only wants a cleanup pipeline should not pay for that, so the metrics
+# degrade honestly without it.
+measurement = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",

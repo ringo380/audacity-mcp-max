@@ -42,6 +42,70 @@ def write_wav(path, rate=44100, channels=1, samples=(0, 8000, -8000, 32000)):
     return str(path)
 
 
+# KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, as stored in an EXTENSIBLE fmt chunk.
+_FLOAT_GUID = struct.pack("<IHH", 3, 0, 0x0010) + bytes(
+    [0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71]
+)
+
+
+# KSDATAFORMAT_SUBTYPE_PCM, the same GUID shape with format code 1.
+_PCM_GUID = struct.pack("<IHH", 1, 0, 0x0010) + bytes(
+    [0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71]
+)
+
+
+def write_extensible_pcm_wav(path, rate=48000, channels=1, bits=24, samples=()):
+    """WAVE_FORMAT_EXTENSIBLE carrying a PCM SubFormat GUID.
+
+    This is what libsndfile writes for 24-bit, and what Python's `wave` module
+    cannot open before 3.12.
+    """
+    width = bits // 8
+    data = b"".join(
+        int(s).to_bytes(width, "little", signed=True) for s in samples
+    )
+    fmt = (
+        struct.pack("<HHIIHH", 0xFFFE, channels, rate, rate * width * channels,
+                    width * channels, bits)
+        + struct.pack("<HHI", 22, bits, 0)
+        + _PCM_GUID
+    )
+    body = (
+        b"WAVE"
+        + b"fmt " + struct.pack("<I", len(fmt)) + fmt
+        + b"data" + struct.pack("<I", len(data)) + data
+    )
+    path.write_bytes(b"RIFF" + struct.pack("<I", 4 + len(body)) + body)
+    return str(path)
+
+
+def write_float_wav(path, rate=48000, channels=1,
+                    samples=(1.0, -1.0, 0.0, 0.5), extensible=False):
+    """A 32-bit IEEE-float WAV, which Python's wave module refuses to open.
+
+    Audacity's internal format is float and its exporter is sticky, so this is
+    a real shape a measurement can be handed.
+    """
+    data = struct.pack("<%df" % len(samples), *samples)
+    if extensible:
+        fmt = (
+            struct.pack("<HHIIHH", 0xFFFE, channels, rate, rate * 4 * channels,
+                        4 * channels, 32)
+            + struct.pack("<HHI", 22, 32, 0)
+            + _FLOAT_GUID
+        )
+    else:
+        fmt = struct.pack("<HHIIHH", 3, channels, rate, rate * 4 * channels,
+                          4 * channels, 32)
+    body = (
+        b"WAVE"
+        + b"fmt " + struct.pack("<I", len(fmt)) + fmt
+        + b"data" + struct.pack("<I", len(data)) + data
+    )
+    path.write_bytes(b"RIFF" + struct.pack("<I", 4 + len(body)) + body)
+    return str(path)
+
+
 class TestSniffContainer:
     def test_real_wav(self, tmp_path):
         assert sniff_container(write_wav(tmp_path / "a.wav")) == "wav"
@@ -100,6 +164,83 @@ class TestOpenPcm:
         with pytest.raises(UnsupportedAudioFile) as exc:
             open_pcm(str(tmp_path / "a.wav"))
         assert "ogg" in str(exc.value)
+
+    def test_float_wav_opens_and_flags_itself_as_float(self, tmp_path):
+        """wave refuses IEEE-float WAV, so open_pcm falls back to its own reader
+        and marks the samples float - the decode layer needs that to tell a
+        4-byte float from a 4-byte int32."""
+        path = write_float_wav(tmp_path / "f.wav", rate=48000, channels=2,
+                               samples=(0.5, -0.5, 0.25, -0.25))
+        with open_pcm(path) as reader:
+            assert reader.sample_format == "float"
+            assert reader.getsampwidth() == 4
+            assert reader.getframerate() == 48000
+            assert reader.getnchannels() == 2
+            assert reader.getnframes() == 2
+
+    def test_extensible_float_wav_is_read_through_the_subformat_guid(self, tmp_path):
+        """Audacity can write WAVE_FORMAT_EXTENSIBLE, where the real format lives
+        in the SubFormat GUID rather than the tag."""
+        path = write_float_wav(tmp_path / "fx.wav", extensible=True,
+                               samples=(1.0, -1.0, 0.0))
+        with open_pcm(path) as reader:
+            assert reader.sample_format == "float"
+            raw = reader.readframes(reader.getnframes())
+        assert struct.unpack("<3f", raw) == (1.0, -1.0, 0.0)
+
+    def test_extensible_pcm_reads_where_wave_cannot(self, tmp_path, monkeypatch):
+        """The stdlib `wave` module only learned WAVE_FORMAT_EXTENSIBLE in
+        Python 3.12, and this project supports 3.10. On 3.10 and 3.11 an
+        ordinary EXTENSIBLE PCM export - the shape libsndfile most often writes
+        for 24-bit - falls through to our own reader, which used to reject it
+        as "not IEEE float".
+
+        Forcing wave.open to fail is what makes this testable on any
+        interpreter: on 3.12+ the file would otherwise never reach the
+        fallback, so the bug would be invisible here exactly where it is
+        invisible in production.
+        """
+        path = write_extensible_pcm_wav(
+            tmp_path / "p.wav", bits=24, channels=2, rate=48000,
+            samples=(0, 1, -1, 8388607, -8388608, 0),
+        )
+        monkeypatch.setattr(
+            wave, "open",
+            lambda *a, **k: (_ for _ in ()).throw(wave.Error("unknown format: 65534")),
+        )
+        with open_pcm(path) as reader:
+            assert reader.sample_format == "int"
+            assert reader.getsampwidth() == 3
+            assert reader.getnchannels() == 2
+            assert reader.getframerate() == 48000
+            assert reader.getnframes() == 3
+
+    def test_extensible_pcm_16_bit_round_trips_through_the_fallback(
+        self, tmp_path, monkeypatch
+    ):
+        path = write_extensible_pcm_wav(
+            tmp_path / "p16.wav", bits=16, channels=1,
+            samples=(0, 8000, -8000, 32000),
+        )
+        monkeypatch.setattr(
+            wave, "open",
+            lambda *a, **k: (_ for _ in ()).throw(wave.Error("unknown format: 65534")),
+        )
+        with open_pcm(path) as reader:
+            raw = reader.readframes(reader.getnframes())
+        assert struct.unpack("<4h", raw) == (0, 8000, -8000, 32000)
+
+    def test_a_non_float_non_pcm_wav_is_rejected_clearly(self, tmp_path):
+        """An A-law/mu-law tag is neither what wave accepts nor float; the
+        message must say so, not raise something opaque."""
+        fmt = struct.pack("<HHIIHH", 6, 1, 44100, 44100, 1, 8)  # tag 6 = A-law
+        body = (b"WAVE" + b"fmt " + struct.pack("<I", len(fmt)) + fmt
+                + b"data" + struct.pack("<I", 4) + b"\x00\x00\x00\x00")
+        (tmp_path / "alaw.wav").write_bytes(
+            b"RIFF" + struct.pack("<I", 4 + len(body)) + body
+        )
+        with pytest.raises(UnsupportedAudioFile):
+            open_pcm(str(tmp_path / "alaw.wav"))
 
 
 class TestDescribe:

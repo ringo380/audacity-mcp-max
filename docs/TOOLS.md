@@ -378,7 +378,7 @@ Check the status of a running pipeline. Call this after starting any `auto_` pip
 
 Analyze the current audio and recommend the best pipeline. **Synchronous** — returns results directly, no job_id.
 
-Returns: `peak_db`, `noise_floor_db`, `is_clipping`, `duration`, `sample_rate`, `recommendation`.
+Returns: `peak_db`, `noise_floor_db`, `is_clipping`, `duration`, `sample_rate`, `recommendation`, plus `lufs` and `true_peak_dbtp` (both `null` without the measurement extra - see below).
 
 ### `auto_cleanup_audio`
 
@@ -388,6 +388,7 @@ Returns: `peak_db`, `noise_floor_db`, `is_clipping`, `duration`, `sample_rate`, 
 |-----------|------|---------|-------------|
 | `remove_noise` | bool | True | Apply noise reduction |
 | `remove_clicks` | bool | False | Apply click removal |
+| `verify` | bool | True | Measure before and after and report what changed. Costs two extra exports. |
 
 Pipeline: DC offset → HPF 80Hz → noise reduction (opt) → click removal (opt). No compression, no loudness change.
 
@@ -399,6 +400,7 @@ Pipeline: DC offset → HPF 80Hz → noise reduction (opt) → click removal (op
 |-----------|------|---------|-------------|
 | `remove_noise` | bool | True | Apply noise reduction |
 | `remove_silence` | bool | False | Truncate silent gaps |
+| `verify` | bool | True | Measure before and after and report what changed. Costs two extra exports. |
 
 Pipeline: DC offset → HPF 80Hz → noise reduction 12dB → truncate silence (opt) → compression 3:1 (30ms attack, 200ms release) → safe loudness check.
 
@@ -409,6 +411,7 @@ Pipeline: DC offset → HPF 80Hz → noise reduction 12dB → truncate silence (
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `remove_noise` | bool | True | Apply noise reduction |
+| `verify` | bool | True | Measure before and after and report what changed. Costs two extra exports. |
 
 Pipeline: DC offset → HPF 80Hz → noise reduction 12dB → compression 2.5:1 → safe loudness check → peak cap -3.5dB.
 
@@ -420,6 +423,7 @@ Pipeline: DC offset → HPF 80Hz → noise reduction 12dB → compression 2.5:1 
 |-----------|------|---------|-------------|
 | `remove_noise` | bool | True | Apply noise reduction |
 | `remove_silence` | bool | False | Truncate silent gaps |
+| `verify` | bool | True | Measure before and after and report what changed. Costs two extra exports. |
 
 Pipeline: DC offset → HPF 80Hz → noise reduction 8dB → truncate silence (opt) → compression 2.5:1 (200ms release) → safe loudness check.
 
@@ -430,12 +434,17 @@ Pipeline: DC offset → HPF 80Hz → noise reduction 8dB → truncate silence (o
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `remove_noise` | bool | True | Apply noise reduction |
+| `verify` | bool | True | Measure before and after and report what changed. Costs two extra exports. |
 
 Pipeline: DC offset → HPF 100Hz → noise reduction 10dB → compression 3:1 → presence EQ (treble +3dB, bass -1dB) → safe loudness check.
 
 ### `auto_cleanup_live`
 
-**One-click live recording cleanup** — aggressive processing for noisy/field recordings. No parameters.
+**One-click live recording cleanup** - aggressive processing for noisy/field recordings.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `verify` | bool | True | Measure before and after and report what changed. Costs two extra exports. |
 
 Pipeline: DC offset → HPF 100Hz → click removal → noise reduction 12dB → compression 5:1 → safe loudness check.
 
@@ -447,6 +456,7 @@ Pipeline: DC offset → HPF 100Hz → click removal → noise reduction 12dB →
 |-----------|------|---------|-------------|
 | `style` | str | "edm" | Genre preset (see table below) |
 | `noise_reduce` | bool | False | Apply gentle noise reduction |
+| `verify` | bool | True | Measure before and after and report what changed. Costs two extra exports. |
 
 | Style | HPF | Compression | EQ | Use For |
 |-------|-----|-------------|-----|---------|
@@ -466,8 +476,37 @@ Pipeline: HPF → click removal → noise reduction (opt) → compression → EQ
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `intensity` | str | "medium" | "light", "medium", or "heavy" |
+| `verify` | bool | True | Measure before and after and report what changed. Costs two extra exports. |
 
 Pipeline: HPF → LPF → warmth EQ → light compression → safe loudness check.
+
+### The `measurement` block
+
+Every `auto_` pipeline (`verify=True`, the default) measures the audio before and
+after itself and returns a `measurement` block through `check_pipeline_status`
+once the job reaches `complete` or `error`:
+
+| Key | Description |
+|-----|-------------|
+| `verified` | Whether this run actually measured - `verify` was on **and** both measurements landed. A blocked export leaves this `false`, so it is never a claim the numbers beside it cannot support. |
+| `before` | Full measurement of the audio at pipeline start, or `null` if `verify=False` or the export failed. |
+| `after` | Full measurement of the audio at pipeline end, same rules as `before`. |
+| `delta` | Per-field `{before, after, change}` for whatever both measurements share; a field missing from either side is skipped, not reported as zero change. Includes `_no_measurable_change: true` when every measured field moved less than the noise floor. |
+| `targets` | This pipeline's declared targets (see below), each `met`, `missed`, or `unknown`. Empty for pipelines with no declared target (`auto_cleanup_audio`, `auto_lofi_effect`), and also empty when the exit measurement failed - check `after` and `warnings` before reading `{}` as "nothing to check". |
+| `capability` | What this install can measure - `numpy`, `scipy`, `loudness`, and `reason` if loudness is unavailable. |
+
+A measurement that could not be taken does **not** make `result.success` false.
+The audio was still processed; what failed was checking it. The reason appears
+in `warnings` alongside any genuine step failures, and `verified` is `false`.
+
+Each entry in `targets` (keyed `lufs`, `true_peak`, `rms`, `peak`, or
+`noise_floor`, depending on the pipeline) reports one of three statuses:
+
+- `met` - the measured value falls inside (or under, for a ceiling) the target.
+- `missed` - it does not, with `gap` (how far off) and `advice` (what to run next).
+- `unknown` - the value could not be measured (no measurement extra, or the
+  export failed), with `reason`. **`unknown` means not measurable, not "not
+  met"** - a target that could not be checked is not a target that failed.
 
 ---
 

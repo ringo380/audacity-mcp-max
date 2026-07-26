@@ -266,3 +266,17 @@ class TestFindUvAgreesWithTheLauncher:
         assert record.exists()
 
         assert doctor_find_uv(env) == str(fake)
+
+
+class TestMeasurementExtra:
+    def test_report_names_the_measurement_extra(self, capsys):
+        """A user whose pipelines report 'lufs: null' needs the doctor to say
+        why, in the same place it explains every other missing piece."""
+        plugin_doctor.main()
+        out = capsys.readouterr().out
+        assert "measurement:" in out
+
+    def test_states_installed_or_not_installed_or_unknown(self, capsys):
+        plugin_doctor.main()
+        line = [l for l in capsys.readouterr().out.splitlines() if "measurement:" in l][0]
+        assert any(s in line for s in ("installed", "not installed", "unknown"))
