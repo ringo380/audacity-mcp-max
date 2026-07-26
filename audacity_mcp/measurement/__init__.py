@@ -35,8 +35,15 @@ _INSTALL_HINT = (
 
 
 def describe_capability() -> dict:
-    """What this install can and cannot measure, and how to fix it."""
-    if LOUDNESS_AVAILABLE:
+    """What this install can and cannot measure, and how to fix it.
+
+    Derived from the two probes rather than read from LOUDNESS_AVAILABLE, so
+    the reported flags and the reported verdict cannot disagree. They are all
+    set once at import and never change, so this is the same answer - it just
+    removes the arrangement where a caller could be told loudness works while
+    the flag beside it says numpy is missing.
+    """
+    if HAVE_NUMPY and HAVE_SCIPY:
         return {"numpy": True, "scipy": True, "loudness": True, "reason": ""}
     missing = [n for n, ok in (("numpy", HAVE_NUMPY), ("scipy", HAVE_SCIPY)) if not ok]
     return {

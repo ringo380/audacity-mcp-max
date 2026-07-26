@@ -34,11 +34,14 @@ def _db(linear: float) -> float:
 
 
 def _percentile(sorted_values: list, pct: float) -> float:
-    """Linear-interpolated percentile of an already-sorted list."""
-    if not sorted_values:
-        return 0.0
-    if len(sorted_values) == 1:
-        return sorted_values[0]
+    """Linear-interpolated percentile of a non-empty, already-sorted list.
+
+    No empty-list or single-value guard. The only caller checks `st.block_rms`
+    is non-empty first, and the interpolation below already returns the single
+    value at every percentile when there is one (pos is 0, lo and hi both 0).
+    Both guards were unreachable, and an unreachable branch reads as a case
+    somebody considered rather than one that cannot happen.
+    """
     pos = (len(sorted_values) - 1) * pct / 100.0
     lo = int(math.floor(pos))
     hi = min(lo + 1, len(sorted_values) - 1)
