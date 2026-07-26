@@ -15,11 +15,13 @@ Three things have to be true, and each fails differently:
    Audacity only creates the script pipes at launch.
 3. **Audacity is running** - the pipes exist only while it is open.
 
-**If the user invoked this as `/audacity:setup --transcription`, do Step 4 only
-and stop.** That is the exact command the transcription tools name when the
-extra is missing, so someone arriving here has a working setup already and
-wants the one thing they are missing, not another pass over all of it.
-**`/audacity:setup --measurement` is the same shortcut for Step 5.**
+**If the user invoked this as `/audacity:setup --transcription` or
+`/audacity:setup --measurement`, do Step 4 only and stop.** Those are the exact
+commands the tools name when an extra is missing, so someone arriving here has
+a working setup already and wants the one thing they are missing, not another
+pass over all of it. Check `/audacity:doctor` first for what is already
+installed, and name that in the sync command too - Step 4 explains why leaving
+it out uninstalls it.
 
 ## Step 1: check uv
 
@@ -81,35 +83,44 @@ codes mean it did nothing, and they are different problems:
   Install uv from https://docs.astral.sh/uv/; nothing else here works until
   then.
 
-## Step 4: transcription (optional)
+## Step 4: the optional extras
 
-Only if the user wants local transcription. It is a large download
-(ctranslate2 and onnxruntime), and the Whisper model itself is fetched on first
-use.
+Two are available, and neither is needed for the core tools:
+
+- **transcription** - local Whisper. A large download (ctranslate2 and
+  onnxruntime), and the model itself is fetched on first use.
+- **measurement** - loudness verification (LUFS, true-peak, target-met checks)
+  in pipeline reports. Without it those fields report `null` or `unknown`
+  rather than a number - not a fault, just an optional extra.
+
+Ask which the user wants, then name **all of them in a single command**.
+`uv sync` is exact: it removes anything the selected extras do not ask for, so
+running it twice installs the second extra and uninstalls the first. A user who
+ran the transcription line and then the measurement line would end up with
+measurement only, and `/audacity:doctor` would report `transcription: not
+installed` immediately after a successful setup.
 
 Use the `uv:` path Step 1 printed rather than a bare `uv` - the same reason
 that step exists at all is that an MCP host does not necessarily put uv on the
 PATH this command runs with, so `uv sync` can fail here for exactly the user
-the resolved-path lookup was for:
+the resolved-path lookup was for.
+
+Both:
 
 ```bash
-cd "${CLAUDE_PLUGIN_ROOT}" && "<uv path from Step 1>" sync --extra transcription
+cd "${CLAUDE_PLUGIN_ROOT}" && "<uv path from Step 1>" sync --extra transcription --extra measurement
 ```
 
-## Step 5: measurement (optional)
-
-Only if the user wants loudness verification (LUFS, true-peak, target-met
-checks) in pipeline reports. Without it, those fields report `null` or
-`unknown` rather than a number - not a fault, just an optional extra.
-
-Use the `uv:` path Step 1 printed rather than a bare `uv`, for the same reason
-as Step 4:
+One only - drop the extra that was not asked for:
 
 ```bash
 cd "${CLAUDE_PLUGIN_ROOT}" && "<uv path from Step 1>" sync --extra measurement
 ```
 
-## Step 6: verify
+To add an extra later without disturbing what is already installed, name every
+extra that should end up installed, not just the new one.
+
+## Step 5: verify
 
 Ask the user to launch Audacity, then call the `audacity_health_check` tool.
 

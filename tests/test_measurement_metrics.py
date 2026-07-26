@@ -48,6 +48,25 @@ class TestNoiseFloor:
         assert compute_metrics(p)["noise_floor_db"] > -10.0
 
 
+    def test_a_short_tail_does_not_define_the_floor(self, tmp_path):
+        """Blocks are one second, so a file that does not end on a second
+        boundary contributes a short final block - and it used to count as a
+        whole one. Three full loud blocks plus 50 ms of digital silence gave a
+        floor of -13.5 dB and a dynamic range of 10.5 dB, against -3.0 and 0.0
+        for the same signal cut at three seconds exactly. The tail is 1.6% of
+        the audio and carried a third of the vote."""
+        loud = sine(1000, 3.0, amplitude=1.0)
+        p = write_signal(tmp_path / "tail.wav", [loud + silence(0.05)])
+        m = compute_metrics(p)
+        assert m["noise_floor_db"] == pytest.approx(-3.0, abs=1.0)
+        assert m["dynamic_range_db"] == pytest.approx(0.0, abs=1.0)
+
+    def test_a_file_shorter_than_one_block_still_has_a_floor(self, tmp_path):
+        """Dropping short blocks must not drop the only block there is."""
+        p = write_signal(tmp_path / "short.wav", [sine(1000, 0.3, amplitude=1.0)])
+        assert compute_metrics(p)["noise_floor_db"] > -20.0
+
+
 class TestDcOffset:
     def test_a_constant_signal_is_all_offset(self, tmp_path):
         p = write_signal(tmp_path / "a.wav", [constant(0.5, 1.0)])

@@ -194,6 +194,35 @@ class TestMeasurementBlock:
         assert status["measurement"]["delta"].get("_no_measurable_change") is True
 
 
+class TestMeasurementDoesNotStallTheLoop:
+    def test_measurement_runs_off_the_event_loop(
+        self, tools, exporting_client, monkeypatch
+    ):
+        """measure_file is CPU-bound - a K-weighting pass and a 4x-oversampled
+        resample over the whole export - and a verified run calls it three
+        times. Inline, it blocks the loop for the duration, so
+        check_pipeline_status cannot answer while a long project is measured."""
+        import threading
+
+        from audacity_mcp.tools import cleanup_tools as ct
+
+        seen = []
+        real = ct.measure_file
+
+        def _record(path):
+            seen.append(threading.current_thread().name)
+            return real(path)
+
+        monkeypatch.setattr(ct, "measure_file", _record)
+        loop_thread = threading.current_thread().name
+        run_to_completion(tools, "auto_cleanup_audio")
+
+        assert seen, "measure_file was never called"
+        assert all(name != loop_thread for name in seen), (
+            f"measurement ran on the event loop thread ({loop_thread})"
+        )
+
+
 class TestTargets:
     def test_podcast_run_evaluates_its_declared_target(self, tools):
         status = run_to_completion(tools, "auto_cleanup_podcast")
@@ -213,6 +242,38 @@ class TestTargets:
         assert status["measurement"]["targets"], (
             "an uppercase style dropped the whole target check"
         )
+
+    def test_a_lofi_intensity_in_the_wrong_case_names_the_job_normally(
+        self, tools
+    ):
+        """The same defect as the style case above, in the pipeline the fix for
+        it did not touch. Harmless only while every lofi spec is None - the day
+        one is declared, an uppercase intensity drops the check silently."""
+        status = run_to_completion(tools, "auto_lofi_effect", intensity="Medium")
+        job = cleanup_tools._jobs[status["job_id"]]
+        assert job["pipeline"] == "lofi_medium"
+
+
+class TestPresetValidation:
+    def test_an_unknown_style_leaves_no_job_behind(self, tools):
+        """_create_job inserts the job as "running" before the preset was
+        checked, and nothing marked it errored - so a typo blocked every later
+        pipeline with "a pipeline is already running" until the ten-minute
+        stale timeout expired."""
+        with pytest.raises(Exception):
+            asyncio.run(tools["auto_master_music"].fn(style="nonsense"))
+        assert cleanup_tools._jobs == {}
+
+    def test_an_unknown_lofi_intensity_leaves_no_job_behind(self, tools):
+        with pytest.raises(Exception):
+            asyncio.run(tools["auto_lofi_effect"].fn(intensity="nonsense"))
+        assert cleanup_tools._jobs == {}
+
+    def test_a_rejected_preset_does_not_block_the_next_pipeline(self, tools):
+        with pytest.raises(Exception):
+            asyncio.run(tools["auto_master_music"].fn(style="nonsense"))
+        status = run_to_completion(tools, "auto_cleanup_audio")
+        assert status["status"] == "complete"
 
 
 class TestStepRecords:
@@ -274,3 +335,30 @@ class TestMeasurementFailureIsHonest:
             "the warning must name the modal-dialog cause, which is the "
             "indistinguishable-from-a-dead-pipe case"
         )
+
+    def test_a_failed_measurement_does_not_fail_the_pipeline(
+        self, tools, exporting_client
+    ):
+        """The audio was processed; what failed was checking it. A verified run
+        measures three times, so a blocking export dialog used to report
+        success: False for a pipeline whose every step applied."""
+        async def _no_file(command, extra_params=None, **params):
+            return {"success": True, "raw": "", "message": "", "data": {}}
+        exporting_client.execute_long.side_effect = _no_file
+
+        status = run_to_completion(tools, "auto_cleanup_audio")
+        assert status["result"]["success"] is True
+        assert status["warnings"], "the failure must still be visible"
+
+    def test_a_failed_measurement_is_not_reported_as_verified(
+        self, tools, exporting_client
+    ):
+        """verified used to be copied from the request at job creation, so a
+        report could carry verified: true beside before: null and after: null -
+        the exact unverifiable claim this package exists to remove."""
+        async def _no_file(command, extra_params=None, **params):
+            return {"success": True, "raw": "", "message": "", "data": {}}
+        exporting_client.execute_long.side_effect = _no_file
+
+        status = run_to_completion(tools, "auto_cleanup_audio")
+        assert status["measurement"]["verified"] is False

@@ -65,6 +65,7 @@ class _State:
         self.prev = [0.0] * channels
         self.first_block = True
         self.block_rms = []      # linear RMS per block, for the percentiles
+        self.block_frames = 0    # the nominal block length, set by the first block
         self.silence_run = 0     # in frames
         self.gaps = []
         self.frame_pos = 0
@@ -88,6 +89,28 @@ def _scan_runs(is_silent, st: _State, n: int, boundaries):
     st.frame_pos += n
 
 
+def _count_block(st: _State, n: int, rms: float):
+    """Record a block's RMS, unless it is a short tail.
+
+    The percentiles weight every entry equally, so a file that does not end on
+    a block boundary used to give its last fragment a whole vote. Three seconds
+    of full-scale tone followed by 50 ms of digital silence reported a noise
+    floor of -13.5 dB and a dynamic range of 10.5 dB, against -3.0 and 0.0 for
+    the same tone cut at three seconds exactly: 1.6% of the audio deciding a
+    third of the answer. The removed _measure_wav had a guard of the same
+    shape.
+
+    The first block sets the nominal length, so a file shorter than one block
+    still measures - it is the only block there is, not a tail.
+    """
+    if not n:
+        return
+    if not st.block_frames:
+        st.block_frames = n
+    if n * 2 >= st.block_frames:
+        st.block_rms.append(rms)
+
+
 def _accumulate_numpy(block, st: _State):
     import numpy as np
 
@@ -103,7 +126,7 @@ def _accumulate_numpy(block, st: _State):
     st.total_sum += float(stacked.sum())
     st.count += int(stacked.size)
     if n:
-        st.block_rms.append(math.sqrt(block_sum_sq / stacked.size))
+        _count_block(st, n, math.sqrt(block_sum_sq / stacked.size))
 
     # Clicks are per channel. Comparing the last sample of L against the first
     # of R would invent a click at every frame boundary of a stereo file.
@@ -151,7 +174,7 @@ def _accumulate_stdlib(block, st: _State):
     st.first_block = False
 
     if n:
-        st.block_rms.append(math.sqrt(block_sum_sq / (n * len(block))))
+        _count_block(st, n, math.sqrt(block_sum_sq / (n * len(block))))
 
     silent = [max(abs(chan[i]) for chan in block) < _SILENCE_LEVEL for i in range(n)]
     boundaries = [0]

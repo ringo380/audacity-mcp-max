@@ -112,6 +112,10 @@ def register(mcp: FastMCP):
                 "current_step": "starting",
                 "steps_applied": [],
                 "steps_failed": [],
+                # Kept apart from steps_failed: a measurement that could not be
+                # taken is not a processing step that failed, and result.success
+                # is computed from steps_failed alone.
+                "measurement_failed": [],
                 "steps": [],
                 "started_at": time.time(),
                 "result": None,
@@ -152,6 +156,13 @@ def register(mcp: FastMCP):
 
         before = job["measurement"]["before"]
         after = job["measurement"]["after"]
+        # Set from what actually landed, not from the request. This package
+        # exists to stop unverifiable claims, so a report carrying
+        # verified: true beside before: null, after: null would be the same
+        # defect it was written to remove.
+        job["measurement"]["verified"] = bool(
+            job.get("verify") and before is not None and after is not None
+        )
         if before and after:
             job["measurement"]["delta"] = _delta(before, after)
         if after:
@@ -168,8 +179,10 @@ def register(mcp: FastMCP):
             "targets": targets,
             "elapsed_seconds": elapsed,
         }
-        if job["steps_failed"]:
-            job["result"]["warnings"] = job["steps_failed"].copy()
+        if job["steps_failed"] or job["measurement_failed"]:
+            job["result"]["warnings"] = (
+                job["steps_failed"] + job["measurement_failed"]
+            )
 
     def _record_step(job: dict, name: str, ok: bool, noop_reason: str | None = None):
         job["steps"].append({"name": name, "ok": ok, "noop_reason": noop_reason})
@@ -270,8 +283,17 @@ def register(mcp: FastMCP):
         """Export the current audio to a temp WAV and measure it.
 
         Non-destructive: it exports a copy and reads that back. Returns the full
-        measurement dict, or None with the reason recorded in steps_failed - a
-        measurement that failed must never look like one that came back clean.
+        measurement dict, or None with the reason recorded in
+        measurement_failed - a measurement that failed must never look like one
+        that came back clean.
+
+        The reasons go in their own list, not steps_failed. A verified run
+        measures three times, and result.success is computed from steps_failed,
+        so a project whose export is blocked by a modal dialog used to report
+        success: False for a pipeline whose every processing step applied. The
+        audio was still processed; what failed was checking it. Both still
+        surface as warnings, so nothing is hidden - they are just no longer the
+        same claim.
         """
         tmp_wav = _temp_wav_path()
         try:
@@ -280,21 +302,29 @@ def register(mcp: FastMCP):
                 "Export2", Filename=tmp_wav, NumChannels=await _project_channels()
             )
             if not os.path.exists(tmp_wav):
-                job["steps_failed"].append(
+                job["measurement_failed"].append(
                     f"measurement: no file at {tmp_wav}. If Audacity is showing a "
                     "dialog (the export metadata editor is the usual one), the "
                     "export is blocked waiting on it - check its window."
                 )
                 return None
             if os.path.getsize(tmp_wav) < 100:
-                job["steps_failed"].append("measurement: export produced an empty file")
+                job["measurement_failed"].append(
+                    "measurement: export produced an empty file"
+                )
                 return None
-            return measure_file(tmp_wav)
+            # In a thread: measure_file is CPU-bound - a K-weighting pass and a
+            # 4x-oversampled resample over the whole export - and a verified run
+            # makes three of these calls. Run inline it blocks the event loop
+            # for their duration, so check_pipeline_status, the documented way
+            # to watch a background job, cannot answer while a long project is
+            # being measured and current_step sits frozen at "measuring before".
+            return await asyncio.to_thread(measure_file, tmp_wav)
         except UnreadableAudio as e:
-            job["steps_failed"].append(f"measurement: {e}")
+            job["measurement_failed"].append(f"measurement: {e}")
             return None
         except Exception as e:
-            job["steps_failed"].append(f"measurement: {type(e).__name__}: {e}")
+            job["measurement_failed"].append(f"measurement: {type(e).__name__}: {e}")
             return None
         finally:
             try:
@@ -649,8 +679,10 @@ def register(mcp: FastMCP):
             result["result"] = job["result"]
         elif job["status"] == "error":
             result["error"] = job["error"]
-        if job["steps_failed"]:
-            result["warnings"] = job["steps_failed"].copy()
+        if job["steps_failed"] or job.get("measurement_failed"):
+            result["warnings"] = (
+                job["steps_failed"] + job.get("measurement_failed", [])
+            )
         if job.get("steps"):
             result["steps"] = [s.copy() for s in job["steps"]]
         if job["status"] in ("complete", "error") and job.get("measurement"):
@@ -738,7 +770,10 @@ def register(mcp: FastMCP):
                 if file_size < 100:
                     measurement_error = f"Export2 created a tiny file ({file_size} bytes)"
                 else:
-                    measurements = measure_file(tmp_wav)
+                    # In a thread, for the reason given in
+                    # _measure_current_audio: this is a CPU-bound pass over the
+                    # whole export and it must not stall the event loop.
+                    measurements = await asyncio.to_thread(measure_file, tmp_wav)
         except UnreadableAudio as e:
             measurement_error = f"export is not readable audio: {e}"
         except Exception as e:
@@ -1317,10 +1352,6 @@ def register(mcp: FastMCP):
         # silently dropped check from one that was never declared.
         style = style.lower().strip()
 
-        job_id, job, conflict = await _create_job(f"mastering_{style}", verify=verify)
-        if job is None:
-            return conflict
-
         presets = {
             "edm": {
                 "hpf_freq": 30.0,
@@ -1391,6 +1422,17 @@ def register(mcp: FastMCP):
             )
 
         p = presets[style]
+
+        # The job slot is claimed only once the preset is known good. Validating
+        # after _create_job left the store holding a job marked "running" that
+        # nothing would ever finish, so _find_running_job refused every
+        # subsequent pipeline with "a pipeline is already running" until the
+        # ten-minute stale timeout expired - a typo in style costing ten
+        # minutes of the tool being unusable.
+        job_id, job, conflict = await _create_job(f"mastering_{style}", verify=verify)
+        if job is None:
+            return conflict
+
         coro = _mastering_pipeline(job, p, noise_reduce)
         await asyncio.sleep(0)
         return _start_background(job_id, job, coro, f"Mastering ({p['label']})")
@@ -1444,10 +1486,12 @@ def register(mcp: FastMCP):
 
         DO NOT call this again if a pipeline is already running — use check_pipeline_status instead.
         """
-        job_id, job, conflict = await _create_job(f"lofi_{intensity}", verify=verify)
-        if job is None:
-            return conflict
-
+        # Normalised before the job name is built, for the reason spelled out
+        # in auto_master_music: the name is what for_pipeline looks up, so
+        # intensity="Medium" produced "lofi_Medium", matched no spec, and
+        # returned an empty targets block indistinguishable from a pipeline
+        # that declares no target. Harmless only while all three lofi specs are
+        # None; it stops being harmless the day one is declared.
         intensity = intensity.lower().strip()
 
         presets = {
@@ -1481,6 +1525,14 @@ def register(mcp: FastMCP):
             )
 
         p = presets[intensity]
+
+        # After validation, for the reason given in auto_master_music: a job
+        # created first and rejected second stays "running" forever and blocks
+        # every later pipeline until the stale timeout.
+        job_id, job, conflict = await _create_job(f"lofi_{intensity}", verify=verify)
+        if job is None:
+            return conflict
+
         coro = _lofi_pipeline(job, p)
         await asyncio.sleep(0)
         return _start_background(job_id, job, coro, f"Lo-Fi Effect ({p['label']})")
