@@ -16,6 +16,26 @@ def empty_job_stores():
     transcription_tools._jobs.clear()
 
 
+def _tracks_reply(channels: int):
+    """A GetInfo Type=Tracks side effect describing one track of `channels`."""
+    import json
+
+    async def _execute(command, **params):
+        if command == "GetInfo" and params.get("Type") == "Tracks":
+            return {
+                "success": True,
+                "raw": "",
+                "message": json.dumps(
+                    [{"name": "Audio", "start": 0, "end": 1.0, "rate": 44100,
+                      "channels": channels}]
+                ),
+                "data": {},
+            }
+        return {"success": True, "raw": "", "message": "", "data": {}}
+
+    return _execute
+
+
 @pytest.fixture
 def exporting_client(mock_client, tmp_path):
     """Make Export2 write a real, measurable WAV, the way Audacity would."""
@@ -83,13 +103,19 @@ class TestMeasurementBlock:
     def test_the_measurement_export_keeps_the_project_channels(
         self, tools, exporting_client
     ):
-        """Forcing NumChannels=1 measures a mono downmix of a stereo project.
+        """A mono export measures a downmix of a stereo project.
 
         On uncorrelated stereo that reads about 3 dB from the truth, which is
         the exact error the dual-mono convention exists to avoid, reintroduced
         above the meter. True peak is worse: L at +0.99 against R at -0.99
         downmixes to about zero, so a ceiling check passes on a file that clips.
+
+        Omitting NumChannels does not avoid this. Audacity's ExportCommand
+        declares `S.Define(mnChannels, wxT("NumChannels"), 1)`, so the absent
+        parameter takes the default and the export is mono anyway - the count
+        has to be sent.
         """
+        exporting_client.execute.side_effect = _tracks_reply(channels=2)
         run_to_completion(tools, "auto_cleanup_audio")
         exports = [
             c for c in exporting_client.execute_long.call_args_list
@@ -97,10 +123,69 @@ class TestMeasurementBlock:
         ]
         assert exports, "no export was made at all"
         for call in exports:
-            assert "NumChannels" not in call.kwargs, (
+            assert call.kwargs.get("NumChannels") == 2, (
                 "the measurement export must carry the project's own channel "
                 f"count, got NumChannels={call.kwargs.get('NumChannels')}"
             )
+
+    def test_a_mono_project_is_exported_mono(self, tools, exporting_client):
+        exporting_client.execute.side_effect = _tracks_reply(channels=1)
+        run_to_completion(tools, "auto_cleanup_audio")
+        exports = [
+            c for c in exporting_client.execute_long.call_args_list
+            if c.args and c.args[0] == "Export2"
+        ]
+        assert exports
+        for call in exports:
+            assert call.kwargs.get("NumChannels") == 1
+
+    def test_an_unanswerable_track_query_exports_stereo(
+        self, tools, exporting_client
+    ):
+        """Guessing mono would silently downmix; guessing stereo cannot lose
+        anything, because a mono project exported as two channels measures
+        identically to the dual-mono convention applied to one."""
+        async def _fail(command, **params):
+            if command == "GetInfo":
+                raise RuntimeError("pipe closed")
+            return {"success": True, "raw": "", "message": "", "data": {}}
+
+        exporting_client.execute.side_effect = _fail
+        run_to_completion(tools, "auto_cleanup_audio")
+        exports = [
+            c for c in exporting_client.execute_long.call_args_list
+            if c.args and c.args[0] == "Export2"
+        ]
+        assert exports
+        for call in exports:
+            assert call.kwargs.get("NumChannels") == 2
+
+    def test_the_analysis_export_keeps_the_project_channels(
+        self, tools, exporting_client
+    ):
+        """auto_analyze_audio exports through a second call site, which the
+        pipeline tests above cannot reach. It has the same defect available to
+        it and had no test of its own."""
+        exporting_client.execute.side_effect = _tracks_reply(channels=2)
+        asyncio.run(tools["auto_analyze_audio"].fn())
+        exports = [
+            c for c in exporting_client.execute_long.call_args_list
+            if c.args and c.args[0] == "Export2"
+        ]
+        assert exports, "no export was made at all"
+        assert exports[0].kwargs.get("NumChannels") == 2
+
+    def test_the_analysis_export_of_a_mono_project_is_mono(
+        self, tools, exporting_client
+    ):
+        exporting_client.execute.side_effect = _tracks_reply(channels=1)
+        asyncio.run(tools["auto_analyze_audio"].fn())
+        exports = [
+            c for c in exporting_client.execute_long.call_args_list
+            if c.args and c.args[0] == "Export2"
+        ]
+        assert exports
+        assert exports[0].kwargs.get("NumChannels") == 1
 
     def test_no_measurable_change_is_flagged(self, tools):
         """Both exports produce the identical signal, so nothing moved. A

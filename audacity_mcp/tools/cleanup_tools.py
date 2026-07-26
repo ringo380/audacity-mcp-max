@@ -231,6 +231,41 @@ def register(mcp: FastMCP):
         await _run_pipeline_step(job, f"HPF {freq}Hz",
             client.execute_long("High-passFilter", frequency=freq, rolloff="dB12"))
 
+    async def _project_channels() -> int:
+        """How many channels a measurement export has to carry.
+
+        This has to be sent explicitly. Audacity's ExportCommand declares
+        `S.Define(mnChannels, wxT("NumChannels"), 1)`, so an Export2 that omits
+        the parameter takes the default and writes mono - leaving it out does
+        not mean "keep what the project has", it means the same downmix as
+        asking for it. Measuring that downmix reads about 3 dB off the truth on
+        uncorrelated stereo, which is the exact error the dual-mono convention
+        exists to avoid, reintroduced one layer above the meter. True peak is
+        worse: L at +0.99 against R at -0.99 sums to about zero, so a ceiling
+        check passes on a file that clips.
+
+        Two is the answer whenever the project has any stereo track, and also
+        whenever the question cannot be answered. Guessing mono would silently
+        downmix; guessing stereo cannot lose anything, because a mono project
+        exported as two channels measures identically to the dual-mono
+        convention applied to one.
+        """
+        import json as _json
+
+        try:
+            info = await client.execute("GetInfo", Type="Tracks")
+            tracks = _json.loads(info.get("message", "") or "[]")
+        except Exception:
+            return 2
+        if not isinstance(tracks, list) or not tracks:
+            return 2
+        counts = [
+            t.get("channels", 0) for t in tracks if isinstance(t, dict)
+        ]
+        if not counts:
+            return 2
+        return 2 if max(counts) >= 2 else 1
+
     async def _measure_current_audio(job: dict) -> dict | None:
         """Export the current audio to a temp WAV and measure it.
 
@@ -241,15 +276,9 @@ def register(mcp: FastMCP):
         tmp_wav = _temp_wav_path()
         try:
             await _select_all()
-            # No NumChannels: the export has to carry the project's own channel
-            # count. Forcing a mono downmix and then applying the dual-mono
-            # convention to it measures something the project is not. On
-            # uncorrelated stereo the two disagree by around 3 dB, which is the
-            # exact error the dual-mono convention exists to avoid, reintroduced
-            # one layer above the meter. True peak is worse: L at +0.99 against
-            # R at -0.99 downmixes to about zero, so a true-peak ceiling would
-            # pass on a file that clips.
-            await client.execute_long("Export2", Filename=tmp_wav)
+            await client.execute_long(
+                "Export2", Filename=tmp_wav, NumChannels=await _project_channels()
+            )
             if not os.path.exists(tmp_wav):
                 job["steps_failed"].append(
                     f"measurement: no file at {tmp_wav}. If Audacity is showing a "
@@ -685,10 +714,18 @@ def register(mcp: FastMCP):
         try:
             await client.execute("Stop")
             await _select_all()
-            # No NumChannels, for the same reason as _measure_current_audio: a
-            # forced mono downmix would put the reported LUFS and true peak
-            # around 3 dB away from what the project actually is.
-            export_result = await client.execute_long("Export2", Filename=tmp_wav)
+            # Sent explicitly, for the reason spelled out in _project_channels:
+            # an omitted NumChannels defaults to 1, so leaving it out exports
+            # the same mono downmix as asking for one, and the reported LUFS
+            # and true peak would be around 3 dB from what the project is.
+            # The track query above already answered this, so reuse it.
+            # default=2 when the query told us nothing, for the same reason
+            # _project_channels falls back to 2: a wrong guess of mono loses a
+            # channel, a wrong guess of stereo loses nothing.
+            channels = max((t["channels"] for t in track_info), default=2)
+            export_result = await client.execute_long(
+                "Export2", Filename=tmp_wav, NumChannels=2 if channels >= 2 else 1
+            )
 
             if not os.path.exists(tmp_wav):
                 measurement_error = (
